@@ -49,7 +49,7 @@ The adapter borrows the memory. Adapter `reset`/`close` do not reset, close or d
 
 Selection never mutates ExchangeLog bytes or tool completion order. Tool declarations/results are retained or omitted together. Incomplete exchanges, pending steering and required context/artifacts stay protected; opaque continuation state conservatively protects the complete history because no smaller dependency closure is declared. If protected content cannot fit, selection raises a typed failure. Recalling an unchanged revision after an earlier omission or restore injects it again.
 
-The installed [two-process consumer](https://github.com/WhitzardAgent/WhitzardOS/tree/codex/v5-r1-b-memory-context/examples/v5/r1_b_memory_context) seeds `remembered-value=17`, exits, restores the configured memory and verifies actual encoded requests and repeated budget compaction. It uses a deterministic provider, not a live model. Legacy CompactHistory remains compatible. Markdown durable reading, model summaries, complete legacy-history retirement, cross-Agent memory policy and original-Agent migration experiments remain out of scope.
+The installed [two-process consumer](https://github.com/WhitzardAgent/WhitzardOS/tree/f7d4b2d666a156d361da496a41868278f84ffabf/examples/v5/r1_b_memory_context) seeds `remembered-value=17`, exits, restores the configured memory and verifies actual encoded requests and repeated budget compaction. It uses a deterministic provider, not a live model. Legacy CompactHistory remains compatible. Markdown durable reading, model summaries, complete legacy-history retirement, cross-Agent memory policy and original-Agent migration experiments remain out of scope.
 
 ## Exercise and answer
 

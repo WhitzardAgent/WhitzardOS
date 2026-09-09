@@ -318,7 +318,11 @@ def test_report_toolset_registers_and_writes_outputs(tmp_path):
 
     report = toolset.generate_report(format="markdown")
     assert report["status"] == "success"
-    assert Path(report["data"]["output_file"]).exists()
+    output_file = Path(report["data"]["output_file"])
+    assert output_file.exists()
+    output = output_file.read_text()
+    assert "[ATT&CK Mapping](#mitre-attck-mapping)" in output
+    assert "#raw-data" not in output
 
 
 def test_security_audit_toolset_registers_cleanly(tmp_path):

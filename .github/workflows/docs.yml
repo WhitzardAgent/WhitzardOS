@@ -112,4 +112,4 @@ jobs:
           python scripts/sync_api_reference.py --check
           python scripts/validate_docs.py
           node scripts/validate_docs_mdx.mjs
-          python -m pytest -q tests/test_tutorial_snippets.py tests/test_docs_golden_paths.py tests/test_docs_page_execution.py
+          python -m pytest -q tests/test_docs_link_integrity.py tests/test_tutorial_snippets.py tests/test_docs_golden_paths.py tests/test_docs_page_execution.py

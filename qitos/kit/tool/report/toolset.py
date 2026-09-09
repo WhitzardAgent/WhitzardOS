@@ -554,8 +554,7 @@ class ReportToolSet:
         report += "## Table of Contents\n\n"
         report += "1. [Findings by Severity](#findings-by-severity)\n"
         report += "2. [Detailed Findings](#detailed-findings)\n"
-        report += "3. [ATT&CK Mapping](#mitre-attack-mapping)\n"
-        report += "4. [Raw Data](#raw-data)\n\n"
+        report += "3. [ATT&CK Mapping](#mitre-attck-mapping)\n\n"
 
         # Findings by Severity
         report += "## Findings by Severity\n\n"

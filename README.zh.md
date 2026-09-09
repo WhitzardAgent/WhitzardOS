@@ -27,6 +27,7 @@ fork 和 handoff。通过 YAML 配置预算，选择持久记忆与显式压缩�
 
 ## What's New
 
+- 文档链接门禁会拒绝未公开分支、校验不可变的本仓库源码对象，并保证中文页面留在中文路由；memory guide 的失效 consumer 链接已修复。
 - Python 3.10 模型清理兼容修复：所有自有资源都会尝试关闭，清理失败保留安全数字诊断和原异常优先级。
 - R1 本地融合与五项审查修复已完成：保留 reasoning、准确请求/清理事实、handoff 归属与纯 YAML budget/loss 接线；恢复继续保留原始会话事实。
 - Memdir 召回与 closed-exchange 压缩、Read/Edit 的 canonical ToolResult、统一 Observation，以及严格快照分页与原子导出已接入用户路径。

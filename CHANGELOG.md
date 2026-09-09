@@ -31,6 +31,7 @@ How to update:
 
 ### Fixed
 
+- Repair the memory guide's unpublished-branch 404, pin tutorial source links to immutable commits, keep Chinese cards on Chinese routes, and validate local Markdown plus first-party Git objects. Generated security-report contents no longer advertise missing or misspelled anchors.
 - Native preflight policy blocks close their canonical conversation slots even when every action is blocked; loop warnings wait until tool results, avoiding orphan batches on the next request.
 - The Hermes course persists history for its packaged task shape, without requiring an undeclared `id` field.
 - The offline work-graph lesson explicitly allocates requests to delegate/spawn children, leaving budget for the remaining operations.

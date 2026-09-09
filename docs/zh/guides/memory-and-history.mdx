@@ -49,7 +49,7 @@ adapter 借用 memory，adapter 的 `reset`/`close` 不会重置、关闭或删�
 
 selection 不修改 ExchangeLog bytes 或工具完成顺序；tool declaration/result 要么一起保留，要么一起省略。未完成 exchange、未消费 steering、required context/artifact 保持受保护。由于没有声明更小的依赖闭包，opaque continuation 状态会保守保护完整历史。受保护内容无法放入预算时，selection 返回 typed failure。相同 revision 在此前省略或恢复后再次召回时会重新注入。
 
-安装后的[两进程 consumer](https://github.com/WhitzardAgent/WhitzardOS/tree/codex/v5-r1-b-memory-context/examples/v5/r1_b_memory_context) 写入 `remembered-value=17` 后退出，再根据配置恢复 memory，验证实际编码请求和重复预算压缩。它使用 deterministic provider，不调用真实模型。旧 CompactHistory 保持兼容。Markdown durable reader、摘要模型、完整旧 history 退休、跨 Agent memory 策略和原 Agent 迁移实验仍不在本轮范围。
+安装后的[两进程 consumer](https://github.com/WhitzardAgent/WhitzardOS/tree/f7d4b2d666a156d361da496a41868278f84ffabf/examples/v5/r1_b_memory_context) 写入 `remembered-value=17` 后退出，再根据配置恢复 memory，验证实际编码请求和重复预算压缩。它使用 deterministic provider，不调用真实模型。旧 CompactHistory 保持兼容。Markdown durable reader、摘要模型、完整旧 history 退休、跨 Agent memory 策略和原 Agent 迁移实验仍不在本轮范围。
 
 ## 练习与参考答案
 
