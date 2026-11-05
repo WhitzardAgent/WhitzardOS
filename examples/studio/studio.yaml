@@ -1,0 +1,10 @@
+agents:
+  - id: default
+    name: Default Agent
+    description: A declarative QitOS Agent configured in agent.yaml.
+    config: agent.yaml
+  - id: research
+    name: Research Agent
+    description: A custom AgentModule policy using the same runtime.
+    config: agent.yaml
+    factory: studio_agents:make_agent

@@ -27,6 +27,8 @@ fork 和 handoff。通过 YAML 配置预算，选择持久记忆与显式压缩�
 
 ## What's New
 
+- QitOS Studio 提供本地 Web 工作台，可登记声明式或自定义 Agent，启动任务、观察 Session 与 Trajectory，并手动恢复符合条件的持久化 Session。参见 [Studio 指南](docs/zh/guides/studio.mdx)。
+
 - 文档链接门禁会拒绝未公开分支、校验不可变的本仓库源码对象，并保证中文页面留在中文路由；memory guide 的失效 consumer 链接已修复。
 - Python 3.10 模型清理兼容修复：所有自有资源都会尝试关闭，清理失败保留安全数字诊断和原异常优先级。
 - R1 本地融合与五项审查修复已完成：保留 reasoning、准确请求/清理事实、handoff 归属与纯 YAML budget/loss 接线；恢复继续保留原始会话事实。

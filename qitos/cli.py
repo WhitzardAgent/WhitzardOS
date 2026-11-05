@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
         subparsers = parser.add_subparsers(dest="command")
         subparsers.add_parser("run", help="Run an agent from canonical agent.yaml")
         subparsers.add_parser("session", help="Inspect and resume durable Sessions")
+        subparsers.add_parser("studio", help="Launch the local Agent web workbench")
         subparsers.add_parser("demo", help="Run packaged demos and quickstarts")
         subparsers.add_parser("skill", help="Manage third-party skills")
         subparsers.add_parser("bench", help="Unified benchmark CLI")
@@ -57,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
             return _run_main(remaining)
         if command == "session":
             return _session_main(remaining)
+        if command == "studio":
+            from qitos.studio.cli import main as studio_main
+            return studio_main(remaining)
         if command == "demo":
             return _demo_main(remaining)
         if command == "skill":
@@ -81,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("run", help="Run an agent from canonical agent.yaml")
     subparsers.add_parser("session", help="Inspect and resume durable Sessions")
+    subparsers.add_parser("studio", help="Launch the local Agent web workbench")
     subparsers.add_parser("demo", help="Run packaged demos and quickstarts")
     subparsers.add_parser("skill", help="Manage third-party skills")
     subparsers.add_parser("bench", help="Unified benchmark CLI")

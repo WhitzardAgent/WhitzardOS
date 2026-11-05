@@ -48,6 +48,10 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+studio-web/node_modules/
+studio-web/*.tsbuildinfo
+.qitos/
+.playwright-cli/
 
 # Translations
 *.mo

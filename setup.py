@@ -106,6 +106,7 @@ setup(
         ],
     },
     package_data={
+        "qitos.studio": ["static/index.html", "static/favicon.svg", "static/assets/*"],
         "qitos.benchmark.desktop": ["data/*.json"],
         "qitos.benchmark.tau_bench.port.envs.retail.data": ["*.json", "*.md"],
         "qitos.benchmark.tau_bench.port.envs.airline.data": ["*.json", "*.md"],

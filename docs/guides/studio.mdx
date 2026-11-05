@@ -1,0 +1,45 @@
+---
+title: QitOS Studio
+description: Start registered Agents and inspect their durable Sessions in a local Web workbench.
+---
+
+QitOS Studio is an optional local Web workbench for developers. It starts a new durable Session for each task and reads the same Trajectory as `qita`. It does not turn every `AgentModule` into a chat bot: follow-up input is available only when its runtime contract supports it.
+
+## Start
+
+Install QitOS with the normal project dependencies. The published wheel includes the built Web assets; Node.js is needed only when building the frontend from source. Put a `studio.yaml` next to your Agent config:
+
+```yaml
+agents:
+  - id: default
+    name: Default Agent
+    description: A declarative Agent.
+    config: agent.yaml
+  - id: research
+    name: Research Agent
+    description: A custom AgentModule policy.
+    config: agent.yaml
+    factory: studio_agents:make_agent
+```
+
+`config` resolves relative to the registry file. `factory` is an importable `module:callable` named only in this local file. It receives `config`, `model`, `tool_registry`, `protocol`, and `parser`, and returns an `AgentModule` bound to those exact resources. The browser can select only the registered IDs. See the [complete two-Agent example](https://github.com/WhitzardAgent/WhitzardOS/tree/master/examples/studio) for the factory and config. Set your real provider endpoint, model, and credential reference before running it; the example endpoint is illustrative.
+
+```bash
+qit studio --registry studio.yaml --credentials ~/.config/qitos/credentials.yaml
+```
+
+Studio listens on `127.0.0.1:8766` and opens the browser. Use `--no-open` or `--port` when needed. Its launch index defaults to `.qitos/studio.sqlite3` beside the registry; set `--state` to choose another path. Keep the credential file outside the repository with the permissions required by QitOS. Studio requires durable SQLite Sessions and an enabled Trajectory for each registered Agent.
+
+## Read and continue
+
+The home page lists registered Agents and recent tasks. A Session page shows task status, recorded activity, final output, and an inspector for tools, WorkGraph, artifacts, and diagnostics. Events are read in sequence from the redacted Trajectory; a reconnect fetches saved records before following live updates. The interface shows `unknown` when a process or fact cannot be observed.
+
+Closing the browser leaves the local Studio process and its tasks running. After a process restart, Studio can read persisted history and manually resume a Session whose durable head is `paused` or `waiting_input`, provided the same config and factory are available. Studio does not automatically restart an in-flight run. Live pause, steer, approval, and Web fork are not available in this version. Use `qita` for the existing board, replay, and export commands.
+
+Studio is a loopback tool. It does not provide account-based remote access or a public sharing link. Share an existing redacted qita export or present the local page when demonstrating an Agent.
+
+## Local API contract
+
+The browser calls only the loopback service. `GET /api/agents` returns registry IDs, names, and descriptions; `GET /api/sessions` returns the latest 100 task launches. `POST /api/sessions` accepts only `{ "agent_id": "...", "task": "..." }` and queues one new Session. `GET /api/sessions/{id}` returns its observed status, persisted lifecycle, safe result or error code, and `can_resume`. `POST /api/sessions/{id}/resume` works only for a saved `paused` or `waiting_input` head with the same configuration digest. Tasks run through a single local worker queue in this release.
+
+`GET /api/sessions/{id}/events?after=N&limit=100` reads up to 256 redacted Trajectory records after sequence `N`, returning `records`, `next_after`, `has_more`, and `unknown`. `GET /api/sessions/{id}/stream?after=N` streams the same saved records as SSE; reconnecting clients first page through the durable reader. A missing trace or a process that is no longer observed is shown as unknown, never as an empty successful run. API failures return a safe `error_code` without raw exception text. A session cookie, CSRF header, Origin check, and exact loopback Host check protect writes.

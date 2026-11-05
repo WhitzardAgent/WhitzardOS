@@ -17,7 +17,7 @@ See [architecture-audit.md](architecture-audit.md) for how the current system wo
 ## Layer model
 
 ```text
-L4  edge/aggregate : cli, demo, qita, experiment, leaderboard, hf, config
+L4  edge/aggregate : cli, demo, qita, studio, experiment, leaderboard, hf, config
 L3  recipes        : recipes (incl. recipes.benchmarks), benchmark (deprecated, migrating)
 L2  implementations: kit, render, evaluate, metric
 L1  kernel runtime : engine, harness(presets), models, mcp, checkpoint
@@ -49,14 +49,15 @@ Dependencies may only point downward (or within the same layer where noted). "La
 | `qitos.recipes` | Canonical recipes + benchmarks (target home) | `qitos.recipes.benchmarks.*`, method recipes | core, engine, kit, models, trace, render, evaluate, metric, harness, benchmark (migration-era only) | periphery |
 | `qitos.config` | Strict declarative launch parsing, credential resolution boundary, and Agent/Engine composition | `load_agent_config`, `CredentialRef`, resolvers, `build_agent_composition`, `run_agent_config` | core, models, engine, kit, checkpoint | benchmark, recipes, periphery |
 | `qitos.experiment` | Sweep/concurrent runs | `ExperimentRunner` | core, engine, config, cache, checkpoint | benchmark, recipes, kit, qita |
-| `qitos.cli`, `qitos.demo`, `qitos.qita`, `qitos.leaderboard`, `qitos.hf`, `qitos.func`, `qitos.debug`, `qitos.cache` | Edge aggregators / deprecated leaves | CLI commands, `qit demo minimal`, qita commands | anything below them | — (nothing inside `qitos` may import them; `qita -> debug` is a legacy exception) |
+| `qitos.studio` | Optional local Web task workbench and redacted Trajectory read model | `load_registry`, `StudioService`, `qit studio` | config, core, qita reader, tracing | kit, benchmark, recipes, kernel ownership |
+| `qitos.cli`, `qitos.demo`, `qitos.qita`, `qitos.leaderboard`, `qitos.hf`, `qitos.func`, `qitos.debug`, `qitos.cache` | Edge aggregators / deprecated leaves | CLI commands, `qit demo minimal`, qita commands | anything below them | — (Studio's read-only qita reader import and the legacy `qita -> debug` edge are explicit exceptions) |
 
 ## Target dependency graph
 
 ```mermaid
 graph TD
     subgraph L4["L4 edge"]
-        CLI["cli / demo / qita / experiment / leaderboard / hf / config"]
+        CLI["cli / demo / qita / studio / experiment / leaderboard / hf / config"]
     end
     subgraph L3["L3 recipes"]
         REC["recipes (incl. benchmarks)"]

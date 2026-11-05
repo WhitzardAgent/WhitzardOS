@@ -47,6 +47,7 @@
                   "guides/sandbox-and-artifacts",
                   "guides/multi-agent-patterns",
                   "guides/observability",
+                  "guides/studio",
                   "guides/third-party-extensions"
                 ]
               },
@@ -212,6 +213,7 @@
                   "zh/guides/sandbox-and-artifacts",
                   "zh/guides/multi-agent-patterns",
                   "zh/guides/observability",
+                  "zh/guides/studio",
                   "zh/guides/third-party-extensions"
                 ]
               },

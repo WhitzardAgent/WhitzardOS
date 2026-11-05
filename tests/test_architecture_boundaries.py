@@ -60,6 +60,7 @@ ALLOWED_MODULE_DEPS: dict[str, frozenset[str] | None] = {
     "hf": frozenset(),
     "demo": frozenset({"core", "kit", "models"}),
     "qita": frozenset(),
+    "studio": frozenset({"config", "core", "qita", "tracing"}),
     "debug": frozenset(),
     "func": frozenset({"core"}),
 }

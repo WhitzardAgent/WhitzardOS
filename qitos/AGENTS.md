@@ -4,7 +4,7 @@ Rules for the `qitos` package as a whole. Deeper rules: `core/AGENTS.md`, `engin
 
 ## Purpose
 
-The framework package: kernel contracts (`core`), execution runtime (`engine`), implementations (`kit`), observability (`trace`/`tracing`/`qita`/`render`), model access (`models`/`harness`), research layers (`recipes`, deprecated `benchmark`), and edge tooling (`cli.py`, `demo`, `config`, `experiment`, `leaderboard`, `hf`).
+The framework package: kernel contracts (`core`), execution runtime (`engine`), implementations (`kit`), observability (`trace`/`tracing`/`qita`/`render`), model access (`models`/`harness`), research layers (`recipes`, deprecated `benchmark`), and edge tooling (`cli.py`, `studio`, `demo`, `config`, `experiment`, `leaderboard`, `hf`).
 
 ## Owns / Does Not Own
 
@@ -23,7 +23,7 @@ The framework package: kernel contracts (`core`), execution runtime (`engine`), 
 
 ## Allowed / Forbidden Dependencies
 
-Enforced by `tests/test_architecture_boundaries.py`. Summary: dependencies point downward `edge -> recipes -> kit -> engine -> core`; nothing imports `cli`/`qita`/`demo`/`experiment`/`leaderboard`/`hf`/`debug`/`cache`; no new module-level cycle; no root self-import. When you remove a legacy violation, delete its allowlist entry in the same change.
+Enforced by `tests/test_architecture_boundaries.py`. Summary: dependencies point downward `edge -> recipes -> kit -> engine -> core`; Studio's read-only qita reader import is an explicit edge-to-edge exception. Nothing imports `cli`/`studio`/`demo`/`experiment`/`leaderboard`/`hf`/`debug`/`cache`; no new module-level cycle; no root self-import. When you remove a legacy violation, delete its allowlist entry in the same change.
 
 ## Invariants
 

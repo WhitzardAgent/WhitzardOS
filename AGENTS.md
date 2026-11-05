@@ -20,6 +20,7 @@ qitos/trace/         frozen historical trace compatibility contract and explicit
 qitos/tracing/       canonical Trajectory journal/readers plus separate diagnostic span processors
 qitos/render/        Rich terminal rendering + EngineHooks
 qitos/qita/          trajectory CLI (board/replay/export)
+qitos/studio/        optional local Web workbench (registered Agents, Sessions, redacted Trajectory)
 qitos/checkpoint/    v2 checkpoint stores (v1 manager deprecated)
 qitos/evaluate|metric/  thin eval contracts; implementations in qitos/kit/evaluate|metric
 qitos/recipes/       canonical recipes: method templates + benchmarks (the benchmark migration target)
@@ -35,12 +36,13 @@ tests/               framework tests (agent-app e2e tests belong in qitos-zoo)
 Enforced by `tests/test_architecture_boundaries.py` (legacy violations on a shrinking allowlist). Full matrix: `docs/architecture/module-boundaries.md`.
 
 ```text
-Allowed (downward):  edge(cli/demo/qita/experiment) -> recipes -> kit -> engine -> core -> protocols/prompting
+Allowed (downward):  edge(cli/demo/qita/studio/experiment) -> recipes -> kit -> engine -> core -> protocols/prompting
                      engine -> models/harness/checkpoint/trace/tracing;  kit -> models/evaluate/metric/trace
+                     studio -> config/core/tracing and the read-only qita reader
 
 Forbidden:  core -> engine/kit/models/benchmark          (contracts stay leaf)
             engine -> kit/benchmark/recipes/mcp/cache    (existing lazy imports are debt, not license)
-            kit -> benchmark/recipes;  anything -> cli/qita/demo/experiment/leaderboard/hf/debug/cache
+            kit -> benchmark/recipes;  anything except studio -> qita; anything -> cli/studio/demo/experiment/leaderboard/hf/debug/cache
             subpackage self-import of root `qitos` (`from qitos import ...` inside qitos/*)
 ```
 
@@ -74,6 +76,7 @@ Change trace/trajectory       -> qitos/trace (v1 format is frozen; v2 = qitos/tr
 Add/fix a benchmark           -> qitos/recipes/benchmarks/ (NOT qitos/benchmark — deprecated)
 Add a method recipe/template  -> qitos/recipes/<method>/ + templates/<method>/ kept in sync
 Change CLI                    -> qitos/cli.py (thin dispatch; no inline data/preset lists)
+Change Studio Web workbench   -> qitos/studio/ + studio-web/ (edge client; preserve Session/Trajectory authority)
 Add MCP integration           -> qitos/mcp/ (engine wiring already exists)
 ```
 

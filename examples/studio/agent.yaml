@@ -1,0 +1,28 @@
+schema: qitos.agent
+agent:
+  name: studio-example
+  protocol: react_text_v1
+model:
+  provider: openai_compatible
+  model: example-model
+  base_url: https://provider.example/v1
+  credential:
+    ref: studio-model
+tools:
+  preset: none
+runtime:
+  environment:
+    type: docker
+    workspace: .
+    image: python:3.12-slim
+  session:
+    mode: durable
+    store: sqlite
+    path: ./.qitos/sessions.sqlite3
+  trajectory:
+    enabled: true
+    output: ./.qitos/trajectory.journal
+budgets:
+  max_steps: 10
+  max_requests: 12
+  max_runtime_seconds: 600

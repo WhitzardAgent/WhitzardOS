@@ -1,0 +1,45 @@
+---
+title: QitOS Studio
+description: 在本地 Web 工作台启动已登记的 Agent，并检查持久化 Session。
+---
+
+QitOS Studio 是面向开发者的可选本地 Web 工作台。每次提交任务都会创建新的持久化 Session；页面读取与 `qita` 相同的 Trajectory。它不会自动把任意 `AgentModule` 变成聊天机器人：只有运行时合同支持后续输入时，界面才会提供相应操作。
+
+## 启动
+
+按项目常规方式安装 QitOS。发布的 wheel 包含已构建的 Web 资源；只有从源码构建前端时才需要 Node.js。在 Agent 配置旁创建 `studio.yaml`：
+
+```yaml
+agents:
+  - id: default
+    name: Default Agent
+    description: 声明式 Agent。
+    config: agent.yaml
+  - id: research
+    name: Research Agent
+    description: 自定义 AgentModule 策略。
+    config: agent.yaml
+    factory: studio_agents:make_agent
+```
+
+`config` 相对清单文件解析。`factory` 是仅能在本地清单中指定的 `module:callable`，接收 `config`、`model`、`tool_registry`、`protocol` 和 `parser`，返回绑定这些资源的 `AgentModule`。浏览器只能选择已登记的 ID。[完整双 Agent 示例](https://github.com/WhitzardAgent/WhitzardOS/tree/master/examples/studio)包含 factory 和配置。运行前需填入实际模型服务、模型名和凭据引用；示例端点仅用于说明结构。
+
+```bash
+qit studio --registry studio.yaml --credentials ~/.config/qitos/credentials.yaml
+```
+
+Studio 只监听 `127.0.0.1:8766`，默认打开浏览器。可用 `--no-open` 或 `--port` 调整。启动索引默认位于清单旁的 `.qitos/studio.sqlite3`；`--state` 可指定其他路径。凭据文件应放在仓库外，并满足 QitOS 的文件权限要求。每个已登记 Agent 都必须启用 SQLite 持久化 Session 和 Trajectory。
+
+## 观察与恢复
+
+首页展示 Agent 和最近任务。Session 页展示任务状态、已记录活动、最终结果，以及工具、WorkGraph、产出和诊断面板。页面按顺序读取脱敏 Trajectory；断线重连先补读持久化记录，再继续接收实时更新。无法确认进程或事实状态时，界面显示 `unknown`。
+
+关闭浏览器不会停止本地 Studio 进程及其中的任务。进程重启后，Studio 可以读取持久化历史，并在配置及 factory 未变化时手动恢复持久化 head 为 `paused` 或 `waiting_input` 的 Session；运行中的任务不会自动续跑。本版本不提供运行中 pause、steer、审批或网页 fork。原有 `qita` board、replay、export 命令继续可用。
+
+Studio 是本机工具，不提供账户式远程访问或公开分享链接。展示 Agent 时，可分享现有的脱敏 qita 导出结果，或演示本地页面。
+
+## 本地 API 合同
+
+浏览器只访问 loopback 服务。`GET /api/agents` 返回清单中的 ID、名称和说明；`GET /api/sessions` 返回最近 100 项任务。`POST /api/sessions` 只接受 `{ "agent_id": "...", "task": "..." }`，并排队创建一个 Session。`GET /api/sessions/{id}` 返回已观测状态、持久化生命周期、可展示的安全结果或错误码，以及 `can_resume`。`POST /api/sessions/{id}/resume` 只允许配置摘要一致、持久化 head 为 `paused` 或 `waiting_input` 的 Session。本版本使用单个本地 worker 队列执行任务。
+
+`GET /api/sessions/{id}/events?after=N&limit=100` 按序号 `N` 之后读取至多 256 条脱敏 Trajectory 记录，返回 `records`、`next_after`、`has_more` 和 `unknown`。`GET /api/sessions/{id}/stream?after=N` 通过 SSE 推送相同的持久化记录；断线重连时，客户端先通过持久化 reader 分页补读。轨迹缺失或进程不再受观测时，页面显示未知，不将空记录解释为成功。API 失败只返回安全的 `error_code`，不返回原始异常文本。写请求受会话 Cookie、CSRF 请求头、Origin 及精确的 loopback Host 校验保护。
