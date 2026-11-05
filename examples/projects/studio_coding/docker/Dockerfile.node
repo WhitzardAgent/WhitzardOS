@@ -1,0 +1,10 @@
+FROM python:3.12-slim-bookworm
+
+COPY --from=node-dist /node.tar.xz /tmp/node.tar.xz
+COPY docker/install_node.py /tmp/install_node.py
+RUN python /tmp/install_node.py && rm /tmp/install_node.py /tmp/node.tar.xz
+ENV PATH="/opt/node/bin:${PATH}"
+RUN ln -s /opt/node/bin/node /usr/local/bin/node \
+    && ln -s /opt/node/bin/npm /usr/local/bin/npm \
+    && ln -s /opt/node/bin/npx /usr/local/bin/npx
+RUN node --version && npm --version

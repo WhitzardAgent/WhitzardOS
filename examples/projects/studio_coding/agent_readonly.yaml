@@ -1,0 +1,38 @@
+schema: qitos.agent
+agent:
+  name: studio-review
+  protocol: json_decision_multi_v1
+model:
+  provider: openai_compatible
+  model: replace-with-your-model
+  base_url: https://provider.example/v1
+  credential:
+    ref: coding-model
+  request:
+    max_tokens: 8192
+    timeout_seconds: 180
+    retries: 0
+tools:
+  preset: none
+  options:
+    native_tool_calls_required: true
+    auto_approve: true
+    editing: false
+runtime:
+  environment:
+    type: docker
+    workspace: ./demo/python
+    image: qitos-studio-coding-python:local
+  session:
+    mode: durable
+    store: sqlite
+    path: ./.qitos/sessions.sqlite3
+  trajectory:
+    enabled: true
+    output: ./.qitos/trajectory.journal
+budgets:
+  max_steps: 80
+  max_requests: 80
+  max_runtime_seconds: 3600
+failure_policy:
+  tool: continue

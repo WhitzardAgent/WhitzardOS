@@ -1,5 +1,7 @@
 # Local fixture tags are not published images or historical G5 image identities.
 FROM python:3.12-slim-bookworm
+ARG DEBIAN_MIRROR=deb.debian.org
+RUN sed -i "s|http://deb.debian.org|https://${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources
 RUN apt-get update && apt-get install -y --no-install-recommends bash git procps ripgrep util-linux \
     && apt-get clean
 RUN python -m pip install --no-cache-dir pytest==9.0.3

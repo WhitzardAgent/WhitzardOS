@@ -15,7 +15,8 @@ from urllib.parse import parse_qs, urlsplit
 from .service import StudioError, StudioService
 
 
-_SESSION = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|stream|resume))?$")
+_SESSION = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|stream|resume|runs|turns|messages|capabilities))?$")
+_AGENT_CAPABILITIES = re.compile(r"^/api/agents/([a-z][a-z0-9_-]{0,63})/capabilities$")
 
 
 def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequestHandler]:
@@ -101,8 +102,21 @@ def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequ
             try:
                 if path == "/api/agents":
                     self._json(200, [agent.public_dict() for agent in service.agents.values()])
+                elif _AGENT_CAPABILITIES.fullmatch(path):
+                    agent_id = cast(re.Match[str], _AGENT_CAPABILITIES.fullmatch(path)).group(1)
+                    self._json(200, service.agent_capabilities(agent_id))
                 elif path == "/api/sessions":
-                    self._json(200, service.list_sessions())
+                    qs = parse_qs(parsed.query)
+                    if "search" in qs:
+                        raise StudioError("search_requires_post")
+                    if qs.get("page") == ["1"]:
+                        self._json(200, service.list_sessions_page(
+                            before=qs.get("before", [None])[0],
+                            limit=int(qs.get("limit", ["50"])[0]),
+                            include_archived=qs.get("archived") == ["1"],
+                        ))
+                    else:
+                        self._json(200, service.list_sessions())
                 else:
                     match = _SESSION.fullmatch(path)
                     if match is None:
@@ -116,7 +130,19 @@ def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequ
                         self._json(200, service.events(
                             launch_id, after=int(qs.get("after", ["0"])[0]),
                             limit=min(int(qs.get("limit", ["100"])[0]), 256),
+                            run_id=qs.get("run_id", [None])[0],
                         ))
+                    elif subroute == "runs":
+                        self._json(200, service.runs(launch_id))
+                    elif subroute == "turns":
+                        qs = parse_qs(parsed.query)
+                        self._json(200, service.conversation(
+                            launch_id, after_turn=int(qs.get("after", ["-1"])[0]),
+                            limit=int(qs.get("limit", ["50"])[0]),
+                        ))
+                    elif subroute == "capabilities":
+                        row = service.get_session(launch_id)
+                        self._json(200, service.agent_capabilities(row["agent_id"], launch_id))
                     elif subroute == "stream":
                         self._stream(launch_id, parsed.query)
                     else:
@@ -127,8 +153,11 @@ def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequ
 
         def _stream(self, launch_id: str, query: str) -> None:
             try:
-                after = int(parse_qs(query).get("after", ["0"])[0])
+                qs = parse_qs(query)
+                after = int(qs.get("after", ["0"])[0])
+                run_id = qs.get("run_id", [None])[0]
                 service.get_session(launch_id)
+                service.events(launch_id, after=after, limit=1, run_id=run_id)
             except (ValueError, StudioError):
                 self._error(400, "stream_request_invalid")
                 return
@@ -139,7 +168,7 @@ def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequ
             self.end_headers()
             try:
                 for _ in range(60):
-                    page = service.events(launch_id, after=after, limit=100)
+                    page = service.events(launch_id, after=after, limit=100, run_id=run_id)
                     for record in page["records"]:
                         after = max(after, int(record.get("sequence") or 0))
                         self.wfile.write((
@@ -160,6 +189,20 @@ def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequ
             parsed = urlsplit(self.path)
             path = parsed.path
             try:
+                if path == "/api/sessions/search":
+                    body = self._read_json()
+                    if set(body) != {"query", "limit", "before", "archived"}:
+                        raise StudioError("request_invalid")
+                    if (not isinstance(body["query"], str)
+                            or not isinstance(body["limit"], int) or isinstance(body["limit"], bool)
+                            or not isinstance(body["archived"], bool)
+                            or (body["before"] is not None and not isinstance(body["before"], str))):
+                        raise StudioError("request_invalid")
+                    self._json(200, service.list_sessions_page(
+                        search=body["query"], limit=body["limit"],
+                        before=body["before"], include_archived=body["archived"],
+                    ))
+                    return
                 if path == "/api/sessions":
                     size = int(self.headers.get("Content-Length", "0"))
                     if size < 2 or size > 20_000 or self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
@@ -173,7 +216,39 @@ def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequ
                 if match and match.group(2) == "resume":
                     self._json(202, service.resume(match.group(1)))
                     return
+                if match and match.group(2) == "messages":
+                    body = self._read_json()
+                    if set(body) != {"message"}:
+                        raise StudioError("request_invalid")
+                    self._json(201, service.submit_message(match.group(1), body["message"]))
+                    return
                 self._error(404, "route_not_found")
+            except (StudioError, ValueError, json.JSONDecodeError) as exc:
+                code = str(exc) if isinstance(exc, StudioError) else "request_invalid"
+                self._error(400 if code == "request_invalid" else 409, code)
+
+        def _read_json(self) -> dict[str, Any]:
+            size = int(self.headers.get("Content-Length", "0"))
+            if size < 2 or size > 20_000 or self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
+                raise StudioError("request_invalid")
+            body = json.loads(self.rfile.read(size))
+            if not isinstance(body, dict):
+                raise StudioError("request_invalid")
+            return body
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            if not self._host_valid() or not self._authorized_write():
+                self._error(403, "write_not_authorized")
+                return
+            match = _SESSION.fullmatch(urlsplit(self.path).path)
+            if not match or match.group(2) is not None:
+                self._error(404, "route_not_found")
+                return
+            try:
+                body = self._read_json()
+                if not body or set(body) - {"title", "pinned", "archived"}:
+                    raise StudioError("request_invalid")
+                self._json(200, service.update_conversation(match.group(1), **body))
             except (StudioError, ValueError, json.JSONDecodeError) as exc:
                 code = str(exc) if isinstance(exc, StudioError) else "request_invalid"
                 self._error(400 if code == "request_invalid" else 409, code)

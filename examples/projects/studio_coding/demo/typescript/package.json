@@ -1,0 +1,7 @@
+{
+  "name": "studio-typescript-demo",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.ts" },
+  "engines": { "node": ">=24" }
+}

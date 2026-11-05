@@ -28,6 +28,7 @@ the application and provider.
 ## What's New
 
 - QitOS Studio adds a local Web workbench for registered declarative and custom Agents, task Sessions, live Trajectory inspection, and manual restore of eligible persisted Sessions. See the [Studio guide](docs/guides/studio.mdx).
+- Studio now groups linked turns under one conversation, offers a Chinese/English Codex-inspired workbench, paged history, capability-gated follow-up input, and a [standalone coding Agent example](examples/projects/studio_coding/README.md). A [local Docker image recipe](docker/studio/README.md) is included.
 - Documentation links now reject unpublished branch targets, verify immutable first-party source objects, and keep Chinese pages on Chinese routes; the memory guide's broken consumer link is repaired.
 - Agent Design Lab now includes six independently installable EN/zh teaching projects, custom `agent_factory` composition, durable skill revisions and live-driven runtime fixes. Python 3.10/3.12 installed and real-Docker mechanism checks pass; real-model task failures remain explicit. See the [evidence and limitations](docs/tutorials/agent-design-lab-results.mdx) and [implementation ledger](docs/internal/plans/agent_design_lab_execution.md). This is not a package release or whole-lab live qualification.
 - Python 3.10 model cleanup compatibility: every owned resource is attempted, with safe numeric cleanup diagnostics and primary exception priority preserved.

@@ -13,6 +13,7 @@ import yaml
 from qitos.core.agent_module import AgentModule
 from qitos.tracing.privacy import project_data
 from qitos.tracing.trajectory import PrivacyView
+from .adapter import StudioAdapter
 
 
 _ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -30,6 +31,7 @@ class AgentSpec:
     description: str
     config_path: Path
     factory_ref: str | None = None
+    adapter_ref: str | None = None
 
     def public_dict(self) -> dict[str, str]:
         return {
@@ -50,6 +52,21 @@ class AgentSpec:
             raise RegistryError("agent_factory_not_callable")
         return cast(Callable[..., AgentModule[Any, Any, Any]], candidate)
 
+    def load_adapter(self) -> StudioAdapter | None:
+        if self.adapter_ref is None:
+            return None
+        module_name, attribute = self.adapter_ref.split(":", 1)
+        try:
+            candidate = getattr(importlib.import_module(module_name), attribute)
+            adapter = candidate()
+        except (ImportError, AttributeError, TypeError) as exc:
+            raise RegistryError("studio_adapter_unavailable") from exc
+        if not callable(getattr(adapter, "capabilities", None)) or not callable(
+            getattr(adapter, "continuation_task", None)
+        ):
+            raise RegistryError("studio_adapter_invalid")
+        return cast(StudioAdapter, adapter)
+
 
 def load_registry(path: str | Path) -> dict[str, AgentSpec]:
     source = Path(path).expanduser().resolve()
@@ -63,7 +80,7 @@ def load_registry(path: str | Path) -> dict[str, AgentSpec]:
     for item in raw["agents"]:
         if not isinstance(item, dict):
             raise RegistryError("agent_shape_invalid")
-        if set(item) - {"id", "name", "description", "config", "factory"}:
+        if set(item) - {"id", "name", "description", "config", "factory", "studio_adapter"}:
             raise RegistryError("unknown_agent_field")
         if not {"id", "name", "config"}.issubset(item):
             raise RegistryError("agent_required_field_missing")
@@ -88,9 +105,14 @@ def load_registry(path: str | Path) -> dict[str, AgentSpec]:
             not isinstance(factory_ref, str) or not _FACTORY.fullmatch(factory_ref)
         ):
             raise RegistryError("agent_factory_invalid")
+        adapter_ref = item.get("studio_adapter")
+        if adapter_ref is not None and (
+            not isinstance(adapter_ref, str) or not _FACTORY.fullmatch(adapter_ref)
+        ):
+            raise RegistryError("studio_adapter_invalid")
         agents[agent_id] = AgentSpec(
             id=agent_id, name=name.strip(), description=description.strip(),
-            config_path=config_path, factory_ref=factory_ref,
+            config_path=config_path, factory_ref=factory_ref, adapter_ref=adapter_ref,
         )
     if not agents:
         raise RegistryError("registry_empty")

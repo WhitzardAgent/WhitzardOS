@@ -49,8 +49,16 @@ Dependencies may only point downward (or within the same layer where noted). "La
 | `qitos.recipes` | Canonical recipes + benchmarks (target home) | `qitos.recipes.benchmarks.*`, method recipes | core, engine, kit, models, trace, render, evaluate, metric, harness, benchmark (migration-era only) | periphery |
 | `qitos.config` | Strict declarative launch parsing, credential resolution boundary, and Agent/Engine composition | `load_agent_config`, `CredentialRef`, resolvers, `build_agent_composition`, `run_agent_config` | core, models, engine, kit, checkpoint | benchmark, recipes, periphery |
 | `qitos.experiment` | Sweep/concurrent runs | `ExperimentRunner` | core, engine, config, cache, checkpoint | benchmark, recipes, kit, qita |
-| `qitos.studio` | Optional local Web task workbench and redacted Trajectory read model | `load_registry`, `StudioService`, `qit studio` | config, core, qita reader, tracing | kit, benchmark, recipes, kernel ownership |
+| `qitos.studio` | Optional local Web task workbench, conversation index, and redacted Trajectory read model | `load_registry`, `StudioAdapter`, `StudioService`, `qit studio` | config, core, qita reader, tracing | kit, benchmark, recipes, kernel ownership |
 | `qitos.cli`, `qitos.demo`, `qitos.qita`, `qitos.leaderboard`, `qitos.hf`, `qitos.func`, `qitos.debug`, `qitos.cache` | Edge aggregators / deprecated leaves | CLI commands, `qit demo minimal`, qita commands | anything below them | — (Studio's read-only qita reader import and the legacy `qita -> debug` edge are explicit exceptions) |
+
+Studio's optional adapter is application-owned presentation and continuation
+policy. A conversation turn starts a distinct runtime Session; only Session
+owns lifecycle, run identity, tool permission, and recovery. Studio's SQLite
+index stores links, submitted text, safe result projections and local title/
+pin/archive metadata. It does not become a second execution or approval
+authority. The current runtime cannot durably resume an interrupted approval,
+so Studio does not expose a browser approval control.
 
 ## Target dependency graph
 

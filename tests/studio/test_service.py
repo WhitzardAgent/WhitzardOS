@@ -10,6 +10,7 @@ from qitos.config.loader import AgentConfig, RuntimeConfig, SessionConfig, Traje
 from qitos.config.errors import CredentialFileSecurityError
 from qitos.studio.registry import AgentSpec
 from qitos.studio.service import StudioError, StudioService
+from qitos.studio.adapter import StudioTurn
 
 
 @dataclass
@@ -163,3 +164,76 @@ def test_public_session_redacts_task_secret(tmp_path: Path) -> None:
     finally:
         gate.set()
         service.close()
+
+
+class DemoAdapter:
+    def capabilities(self):
+        return {"continuation": True, "views": ["files", "diff"]}
+
+    def continuation_task(self, turns: list[StudioTurn], message: str) -> str:
+        return f"Inspect this follow-up.\nPrevious request: {turns[-1].task}\nFollow-up: {message}"
+
+
+def test_linked_turns_keep_distinct_sessions_and_messages(tmp_path: Path) -> None:
+    gate = Event()
+    gate.set()
+    with _service(tmp_path, gate) as service:
+        spec = service.agents["demo"]
+        service.agents["demo"] = AgentSpec(
+            spec.id, spec.name, spec.description, spec.config_path,
+            adapter_ref=f"{__name__}:DemoAdapter",
+        )
+        first = service.start("demo", "Inspect this project")
+        service.wait_for_idle()
+        second = service.submit_message(first["id"], "Inspect this change")
+        service.wait_for_idle()
+        assert second["conversation_id"] == first["id"]
+        assert second["turn_index"] == 1
+        assert service.get_session(second["id"])["session_id"] == "session-1"  # Test composition identity.
+        assert second["message"] == "Inspect this change"
+        assert "Follow-up: Inspect this change" in service._row(second["id"])["task"]
+        assert [turn["id"] for turn in service.conversation(first["id"])["items"]] == [first["id"], second["id"]]
+        assert service.agent_capabilities("demo", first["id"])["operations"]["message"]["available"]
+        assert service.get_session(first["id"])["latest_status"] == "completed"
+        assert service.runs(first["id"])[0]["run_id"] == "run-1"
+        with pytest.raises(StudioError, match="run_not_found"):
+            service.events(first["id"], run_id="other-run")
+
+
+def test_default_agent_has_no_follow_up_and_pages_history(tmp_path: Path) -> None:
+    gate = Event()
+    gate.set()
+    with _service(tmp_path, gate) as service:
+        ids = []
+        for index in range(4):
+            ids.append(service.start("demo", f"Inspect this {index}")["id"])
+        service.wait_for_idle()
+        with pytest.raises(StudioError, match="continuation_unsupported"):
+            service.submit_message(ids[-1], "more")
+        first = service.list_sessions_page(limit=2)
+        second = service.list_sessions_page(limit=2, before=first["next_before"])
+        assert len(first["items"]) == len(second["items"]) == 2
+        assert {item["id"] for item in first["items"]}.isdisjoint(
+            {item["id"] for item in second["items"]}
+        )
+        service.update_conversation(ids[0], title="A title", pinned=True, archived=True)
+        assert service.get_session(ids[0])["title"] == "A title"
+        assert all(item["id"] != ids[0] for item in service.list_sessions_page()["items"])
+        assert [item["id"] for item in service.list_sessions_page(include_archived=True)["items"]] == [ids[0]]
+        assert [item["id"] for item in service.list_sessions_page(search="Inspect this 2")["items"]] == [ids[2]]
+
+
+def test_old_launch_rows_migrate_without_inventing_missing_runs(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "studio.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE launches (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, task TEXT NOT NULL, "
+                   "session_id TEXT, run_id TEXT, status TEXT NOT NULL, error_code TEXT, final_result TEXT, "
+                   "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        db.execute("INSERT INTO launches VALUES ('legacy', 'demo', 'Inspect this', NULL, NULL, "
+                   "'completed', NULL, NULL, '2026-01-01', '2026-01-01')")
+    with _service(tmp_path, Event()) as service:
+        assert service.get_session("legacy")["conversation_id"] == "legacy"
+        assert service.get_session("legacy")["turn_index"] == 0
+        assert service.runs("legacy") == []

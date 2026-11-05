@@ -1,0 +1,5 @@
+FROM python:3.12-slim-bookworm
+RUN python -m pip install --no-cache-dir pytest==9.0.3
+RUN useradd --uid 10001 --create-home coder
+USER coder
+WORKDIR /workspace

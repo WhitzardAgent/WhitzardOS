@@ -20,9 +20,19 @@ class _Service:
     def list_sessions(self):
         return []
 
+    def list_sessions_page(self, **kwargs):
+        return {"items": [], "next_before": None, "query_used": kwargs.get("search", "")}
+
     def start(self, agent_id, task):
         self.started += 1
         return {"id": "launch-1", "agent_id": agent_id, "task": task}
+
+    def submit_message(self, conversation_id, message):
+        self.started += 1
+        return {"id": "turn-2", "conversation_id": conversation_id, "message": message}
+
+    def update_conversation(self, conversation_id, **fields):
+        return {"id": conversation_id, **fields}
 
 
 def test_local_http_requires_cookie_csrf_and_origin_for_launch(tmp_path: Path) -> None:
@@ -61,6 +71,52 @@ def test_local_http_requires_cookie_csrf_and_origin_for_launch(tmp_path: Path) -
         assert status == 201
         assert payload["id"] == "launch-1"
         assert service.started == 1
+
+        request = http.client.HTTPConnection("127.0.0.1", port)
+        request.request("GET", "/api/sessions?page=1&search=private", headers={"Cookie": cookie})
+        response = request.getresponse()
+        assert response.status == 409
+        assert json.loads(response.read())["error_code"] == "search_requires_post"
+        request.close()
+
+        request = http.client.HTTPConnection("127.0.0.1", port)
+        request.request("POST", "/api/sessions/search",
+                        json.dumps({"query": "private", "limit": 50, "before": None, "archived": False}),
+                        {"Content-Type": "application/json", "Cookie": cookie,
+                         "X-Studio-CSRF": csrf, "Origin": f"http://127.0.0.1:{port}"})
+        response = request.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read())["query_used"] == "private"
+        request.close()
+
+        launch_id = "12345678-1234-1234-1234-123456789abc"
+        request = http.client.HTTPConnection("127.0.0.1", port)
+        request.request("POST", f"/api/sessions/{launch_id}/messages",
+                        json.dumps({"message": "follow up"}),
+                        {"Content-Type": "application/json", "Cookie": cookie,
+                         "X-Studio-CSRF": csrf, "Origin": f"http://127.0.0.1:{port}"})
+        response = request.getresponse()
+        assert response.status == 201
+        assert json.loads(response.read())["message"] == "follow up"
+        request.close()
+
+        request = http.client.HTTPConnection("127.0.0.1", port)
+        request.request("PATCH", f"/api/sessions/{launch_id}", json.dumps({"title": "Changed"}),
+                        {"Content-Type": "application/json", "Cookie": cookie,
+                         "X-Studio-CSRF": csrf, "Origin": f"http://127.0.0.1:{port}"})
+        response = request.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read())["title"] == "Changed"
+        request.close()
+
+        request = http.client.HTTPConnection("127.0.0.1", port)
+        request.request("PATCH", f"/api/sessions/{launch_id}", json.dumps({"title": "Evil"}),
+                        {"Content-Type": "application/json", "Cookie": cookie,
+                         "X-Studio-CSRF": csrf, "Origin": "https://evil.example"})
+        response = request.getresponse()
+        assert response.status == 403
+        response.read()
+        request.close()
     finally:
         server.shutdown()
         server.server_close()

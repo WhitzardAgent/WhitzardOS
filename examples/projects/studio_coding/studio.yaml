@@ -1,0 +1,19 @@
+agents:
+  - id: coding
+    name: Coding Agent
+    description: Inspect, edit and verify a configured project workspace.
+    config: agent.yaml
+    factory: qitos_studio_coding:make_agent
+    studio_adapter: qitos_studio_coding:StudioCodingAdapter
+  - id: review
+    name: Read-only Reviewer
+    description: Inspect and verify a project without editing tools.
+    config: agent_readonly.yaml
+    factory: qitos_studio_coding:make_agent
+    studio_adapter: qitos_studio_coding:StudioReviewAdapter
+  - id: coding_ts
+    name: TypeScript Coding Agent
+    description: The same policy with a Node workspace and image.
+    config: agent_typescript.yaml
+    factory: qitos_studio_coding:make_agent
+    studio_adapter: qitos_studio_coding:StudioCodingAdapter

@@ -19,7 +19,8 @@ from qitos.tracing.paging import BoundedReadUnsupported, read_page
 from qitos.tracing.privacy import project_data
 from qitos.tracing.trajectory import PrivacyView, TrajectoryQuery
 
-from .registry import AgentSpec
+from .adapter import StudioTurn
+from .registry import AgentSpec, RegistryError
 
 
 def _now() -> str:
@@ -60,6 +61,24 @@ class StudioService:
                 session_id TEXT, run_id TEXT, status TEXT NOT NULL,
                 error_code TEXT, final_result TEXT, created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL)""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(launches)")}
+            for name, definition in (
+                ("conversation_id", "TEXT"), ("turn_index", "INTEGER"),
+                ("title", "TEXT"), ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+                ("archived", "INTEGER NOT NULL DEFAULT 0"),
+                ("message", "TEXT"),
+            ):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE launches ADD COLUMN {name} {definition}")
+            db.execute("""CREATE TABLE IF NOT EXISTS launch_runs (
+                launch_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                created_at TEXT NOT NULL, PRIMARY KEY (launch_id, run_id))""")
+            db.execute("CREATE INDEX IF NOT EXISTS launches_conversation ON launches(conversation_id, turn_index)")
+            # Legacy launches are one-turn conversations. Missing historical run
+            # identities remain unknown rather than being fabricated.
+            db.execute("UPDATE launches SET conversation_id = id, turn_index = 0 WHERE conversation_id IS NULL")
+            db.execute("""INSERT OR IGNORE INTO launch_runs (launch_id, run_id, created_at)
+                SELECT id, run_id, created_at FROM launches WHERE run_id IS NOT NULL""")
 
     def __enter__(self) -> "StudioService":
         return self
@@ -94,7 +113,8 @@ class StudioService:
         _session_store_path(config)  # A launch must have a stable persistence target.
         return config
 
-    def start(self, agent_id: str, task: str) -> dict[str, Any]:
+    def start(self, agent_id: str, task: str, *, conversation_id: str | None = None,
+              message: str | None = None) -> dict[str, Any]:
         spec = self.agents.get(agent_id)
         if spec is None:
             raise StudioError("agent_not_registered")
@@ -104,15 +124,52 @@ class StudioService:
         launch_id = str(uuid.uuid4())
         timestamp = _now()
         with self._lock, self._db() as db:
+            turn_index = 0
+            if conversation_id is not None:
+                last = db.execute(
+                    "SELECT MAX(turn_index) FROM launches WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()[0]
+                if last is None:
+                    raise StudioError("session_not_found")
+                turn_index = last + 1
             db.execute(
-                "INSERT INTO launches (id, agent_id, task, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'queued', ?, ?)",
-                (launch_id, agent_id, task.strip(), timestamp, timestamp),
+                "INSERT INTO launches (id, agent_id, task, status, created_at, updated_at, "
+                "conversation_id, turn_index, message) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+                (launch_id, agent_id, task.strip(), timestamp, timestamp,
+                 conversation_id or launch_id, turn_index, message or task.strip()),
             )
             self._futures[launch_id] = self._pool.submit(
                 self._execute, launch_id, spec, config, task.strip(), False,
             )
         return self.get_session(launch_id)
+
+    def submit_message(self, conversation_id: str, message: str) -> dict[str, Any]:
+        if not isinstance(message, str) or not message.strip() or len(message) > 16_000:
+            raise StudioError("task_invalid")
+        with self._lock:
+            turns = self._conversation_rows(conversation_id)
+            if not turns:
+                raise StudioError("session_not_found")
+            last = self._public_row(turns[-1])
+            if last["status"] in {"queued", "running", "unknown"}:
+                raise StudioError("session_busy")
+            spec = self.agents.get(last["agent_id"])
+            if spec is None:
+                raise StudioError("agent_not_registered")
+            try:
+                adapter = spec.load_adapter()
+            except RegistryError as exc:
+                raise StudioError(str(exc)) from exc
+            if adapter is None or not adapter.capabilities().get("continuation"):
+                raise StudioError("continuation_unsupported")
+            history = [StudioTurn(row["task"], row["session_id"], row["run_id"], row["status"])
+                       for row in turns]
+            task = adapter.continuation_task(history, message.strip())
+            if not isinstance(task, str) or not task.strip() or len(task) > 16_000:
+                raise StudioError("continuation_invalid")
+            return self.start(spec.id, task, conversation_id=conversation_id,
+                              message=message.strip())
 
     def resume(self, launch_id: str) -> dict[str, Any]:
         with self._lock:
@@ -147,6 +204,9 @@ class StudioService:
                     launch_id, session_id=session.session_id.value,
                     run_id=session.run_id.value, status="running",
                 )
+                with self._db() as db:
+                    db.execute("INSERT OR IGNORE INTO launch_runs VALUES (?, ?, ?)",
+                               (launch_id, session.run_id.value, _now()))
                 result = session.run()
                 final = project_data(
                     result.state.final_result, view=PrivacyView.REDACTED_PUBLIC,
@@ -182,11 +242,19 @@ class StudioService:
     def _public_row(self, row: sqlite3.Row) -> dict[str, Any]:
         result = {key: row[key] for key in (
             "id", "agent_id", "task", "session_id", "run_id", "status",
-            "error_code", "created_at", "updated_at",
+            "error_code", "created_at", "updated_at", "conversation_id", "turn_index",
+            "title", "pinned", "archived", "message",
         )}
         result["task"] = project_data(
             row["task"], view=PrivacyView.REDACTED_PUBLIC,
         ).data
+        result["message"] = project_data(
+            row["message"] or row["task"], view=PrivacyView.REDACTED_PUBLIC,
+        ).data
+        if result["title"]:
+            result["title"] = project_data(
+                result["title"], view=PrivacyView.REDACTED_PUBLIC,
+            ).data
         result["final_result"] = json.loads(row["final_result"]) if row["final_result"] else None
         active = row["id"] in self._futures and not self._futures[row["id"]].done()
         if row["status"] in {"queued", "running"} and not active:
@@ -214,21 +282,156 @@ class StudioService:
                     result["lifecycle"] = "unknown"
                     result["capabilities"] = []
                     result["can_resume"] = False
+        if row["turn_index"] == 0:
+            with self._db() as db:
+                latest = db.execute(
+                    "SELECT * FROM launches WHERE conversation_id = ? ORDER BY turn_index DESC LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+            if latest is not None and latest["id"] != row["id"]:
+                result["latest_status"] = self._public_row(latest)["status"]
+            else:
+                result["latest_status"] = result["status"]
+        return result
+
+    def agent_capabilities(self, agent_id: str, launch_id: str | None = None) -> dict[str, Any]:
+        spec = self.agents.get(agent_id)
+        if spec is None:
+            raise StudioError("agent_not_registered")
+        try:
+            adapter = spec.load_adapter()
+        except RegistryError as exc:
+            raise StudioError(str(exc)) from exc
+        declared = adapter.capabilities() if adapter else {}
+        if not isinstance(declared, dict):
+            raise StudioError("studio_adapter_invalid")
+        allowed = {"continuation", "views", "inputs", "description"}
+        if set(declared) - allowed:
+            raise StudioError("studio_adapter_invalid")
+        result: dict[str, Any] = {
+            "agent_id": agent_id,
+            "inputs": ["text"], "views": ["timeline", "tools", "graph", "artifacts", "diagnostics"],
+            "operations": {"start": {"available": True}},
+        }
+        if isinstance(declared.get("views"), list):
+            declared_views = declared["views"]
+            assert isinstance(declared_views, list)
+            result["views"] = sorted(set(result["views"] + [
+                view for view in declared_views if isinstance(view, str)
+                and view in {"files", "diff"}
+            ]))
+        if launch_id is not None:
+            row = self._row(launch_id)
+            if row["agent_id"] != agent_id:
+                raise StudioError("agent_mismatch")
+            latest = self._conversation_rows(row["conversation_id"])[-1]
+            current = self._public_row(latest)
+            terminal = current["status"] not in {"queued", "running", "unknown"}
+            result["operations"]["message"] = {
+                "available": bool(adapter and declared.get("continuation") and terminal),
+                "reason": None if adapter and declared.get("continuation") and terminal
+                else ("session_busy" if not terminal else "continuation_unsupported"),
+            }
+            result["operations"]["resume"] = {
+                "available": bool(current.get("can_resume")),
+                "reason": None if current.get("can_resume") else "session_not_resumable",
+            }
         return result
 
     def get_session(self, launch_id: str) -> dict[str, Any]:
         return self._public_row(self._row(launch_id))
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        with self._db() as db:
-            rows = db.execute("SELECT * FROM launches ORDER BY created_at DESC LIMIT 100").fetchall()
-        return [self._public_row(row) for row in rows]
+        return self.list_sessions_page()["items"]
 
-    def events(self, launch_id: str, *, after: int = 0, limit: int = 100) -> dict[str, Any]:
+    def list_sessions_page(self, *, before: str | None = None, limit: int = 50,
+                           include_archived: bool = False,
+                           search: str = "") -> dict[str, Any]:
+        if limit < 1 or limit > 100:
+            raise StudioError("page_limit_invalid")
+        if before is not None and (len(before) > 80 or not before):
+            raise StudioError("page_cursor_invalid")
+        if not isinstance(search, str) or len(search) > 120:
+            raise StudioError("search_invalid")
+        with self._db() as db:
+            where = "turn_index = 0 AND archived = ?"
+            args: list[Any] = [int(include_archived)]
+            if search:
+                escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                where += " AND (title LIKE ? ESCAPE '\\' OR message LIKE ? ESCAPE '\\' OR agent_id LIKE ? ESCAPE '\\')"
+                args.extend([f"%{escaped}%"] * 3)
+            if before is not None:
+                cursor = db.execute("SELECT pinned, created_at, id FROM launches WHERE id = ? AND turn_index = 0",
+                                    (before,)).fetchone()
+                if cursor is None:
+                    raise StudioError("page_cursor_invalid")
+                where += " AND (pinned < ? OR (pinned = ? AND "
+                where += "(created_at < ? OR (created_at = ? AND id < ?))))"
+                args.extend([cursor["pinned"], cursor["pinned"],
+                             cursor["created_at"], cursor["created_at"], cursor["id"]])
+            rows = db.execute(f"SELECT * FROM launches WHERE {where} "
+                              "ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ?",
+                              (*args, limit + 1)).fetchall()
+        items = [self._public_row(row) for row in rows[:limit]]
+        return {"items": items, "next_before": items[-1]["id"] if len(rows) > limit else None}
+
+    def _conversation_rows(self, conversation_id: str) -> list[sqlite3.Row]:
+        with self._db() as db:
+            return db.execute("SELECT * FROM launches WHERE conversation_id = ? ORDER BY turn_index",
+                              (conversation_id,)).fetchall()
+
+    def conversation(self, conversation_id: str, *, after_turn: int = -1,
+                     limit: int = 50) -> dict[str, Any]:
+        if after_turn < -1 or limit < 1 or limit > 100:
+            raise StudioError("page_cursor_invalid")
+        root = self._row(conversation_id)
+        if root["turn_index"] != 0:
+            raise StudioError("session_not_found")
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM launches WHERE conversation_id = ? AND turn_index > ? "
+                              "ORDER BY turn_index LIMIT ?", (conversation_id, after_turn, limit + 1)).fetchall()
+        items = [self._public_row(row) for row in rows[:limit]]
+        return {"items": items, "next_after_turn": items[-1]["turn_index"] if len(rows) > limit else None}
+
+    def update_conversation(self, conversation_id: str, *, title: str | None = None,
+                            pinned: bool | None = None, archived: bool | None = None) -> dict[str, Any]:
+        root = self._row(conversation_id)
+        if root["turn_index"] != 0:
+            raise StudioError("session_not_found")
+        fields: dict[str, Any] = {}
+        if title is not None:
+            if not isinstance(title, str) or not title.strip() or len(title) > 120:
+                raise StudioError("title_invalid")
+            fields["title"] = title.strip()
+        if pinned is not None:
+            if not isinstance(pinned, bool):
+                raise StudioError("metadata_invalid")
+            fields["pinned"] = int(pinned)
+        if archived is not None:
+            if not isinstance(archived, bool):
+                raise StudioError("metadata_invalid")
+            fields["archived"] = int(archived)
+        if not fields:
+            raise StudioError("metadata_invalid")
+        self._update(conversation_id, **fields)
+        return self.get_session(conversation_id)
+
+    def runs(self, launch_id: str) -> list[dict[str, str]]:
+        self._row(launch_id)
+        with self._db() as db:
+            rows = db.execute("SELECT run_id, created_at FROM launch_runs WHERE launch_id = ? "
+                              "ORDER BY created_at, run_id", (launch_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def events(self, launch_id: str, *, after: int = 0, limit: int = 100,
+               run_id: str | None = None) -> dict[str, Any]:
         if after < 0 or limit < 1 or limit > 256:
             raise StudioError("event_cursor_invalid")
         row = self._row(launch_id)
-        if not row["run_id"]:
+        if run_id is not None and run_id not in {run["run_id"] for run in self.runs(launch_id)}:
+            raise StudioError("run_not_found")
+        selected_run = run_id or row["run_id"]
+        if not selected_run:
             return {"records": [], "next_after": after, "unknown": True}
         spec = self.agents.get(row["agent_id"])
         if spec is None:
@@ -240,7 +443,7 @@ class StudioService:
         try:
             reader = default_reader(source)
             page = read_page(
-                reader, TrajectoryQuery(run_id=row["run_id"], after_sequence=after, limit=limit),
+                reader, TrajectoryQuery(run_id=selected_run, after_sequence=after, limit=limit),
                 view=PrivacyView.REDACTED_PUBLIC,
             )
             records = [project_data(record.to_dict(), view=PrivacyView.SAFE_DIAGNOSTIC).data

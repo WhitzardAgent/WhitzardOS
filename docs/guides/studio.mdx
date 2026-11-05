@@ -1,13 +1,13 @@
 ---
 title: QitOS Studio
-description: Start registered Agents and inspect their durable Sessions in a local Web workbench.
+description: Run registered Agents in a local conversation workbench and inspect durable facts.
 ---
 
-QitOS Studio is an optional local Web workbench for developers. It starts a new durable Session for each task and reads the same Trajectory as `qita`. It does not turn every `AgentModule` into a chat bot: follow-up input is available only when its runtime contract supports it.
+QitOS Studio is an optional local Web client for any registered QitOS Agent. It uses the canonical `AgentModule`, `Engine`, durable Session and Trajectory contracts. An Agent can start with only an `agent.yaml`; an application can add a Python factory and optional Studio adapter without writing frontend code. The adapter describes presentation and a follow-up task strategy. It cannot grant filesystem, network, tool or model permissions.
 
-## Start
+## Install and start
 
-Install QitOS with the normal project dependencies. The published wheel includes the built Web assets; Node.js is needed only when building the frontend from source. Put a `studio.yaml` next to your Agent config:
+The QitOS wheel includes built Web assets. Node.js is needed only to rebuild `studio-web` from source. Put this operator-owned registry beside your Agent configuration:
 
 ```yaml
 agents:
@@ -15,31 +15,38 @@ agents:
     name: Default Agent
     description: A declarative Agent.
     config: agent.yaml
-  - id: research
-    name: Research Agent
-    description: A custom AgentModule policy.
+  - id: custom
+    name: Custom Agent
     config: agent.yaml
-    factory: studio_agents:make_agent
+    factory: my_agent:make_agent
+    studio_adapter: my_agent:StudioAdapter
 ```
 
-`config` resolves relative to the registry file. `factory` is an importable `module:callable` named only in this local file. It receives `config`, `model`, `tool_registry`, `protocol`, and `parser`, and returns an `AgentModule` bound to those exact resources. The browser can select only the registered IDs. See the [complete two-Agent example](https://github.com/WhitzardAgent/WhitzardOS/tree/master/examples/studio) for the factory and config. Set your real provider endpoint, model, and credential reference before running it; the example endpoint is illustrative.
+`config` resolves relative to the registry. The factory receives the existing composition's `config`, `model`, `tool_registry`, `protocol` and `parser`. `studio_adapter` is an optional `module:callable` whose instance implements `capabilities()` and `continuation_task(turns, message)`. Both references are specified only in the local registry; browser requests cannot import modules or submit paths. See [the standalone coding reference](https://github.com/WhitzardAgent/WhitzardOS/tree/master/examples/projects/studio_coding) and [the declarative/non-coding sample](https://github.com/WhitzardAgent/WhitzardOS/tree/master/examples/studio).
 
 ```bash
 qit studio --registry studio.yaml --credentials ~/.config/qitos/credentials.yaml
 ```
 
-Studio listens on `127.0.0.1:8766` and opens the browser. Use `--no-open` or `--port` when needed. Its launch index defaults to `.qitos/studio.sqlite3` beside the registry; set `--state` to choose another path. Keep the credential file outside the repository with the permissions required by QitOS. Studio requires durable SQLite Sessions and an enabled Trajectory for each registered Agent.
+Studio binds `127.0.0.1:8766`, opens the browser, and stores its local launch index in `.qitos/studio.sqlite3` next to the registry unless `--state` is set. Each Agent must use a durable SQLite Session and enabled Trajectory. Use an explicit model configuration and credential reference; do not put keys in the registry. `qita board/replay/export` remain available.
 
-## Read and continue
+A reproducible [local Docker image](https://github.com/WhitzardAgent/WhitzardOS/tree/master/docker/studio) packages the same Studio service. Use host networking on Linux because the listener is intentionally loopback-only; bind mounting an Agent project does not install its Python package or provision its Docker Env.
 
-The home page lists registered Agents and recent tasks. A Session page shows task status, recorded activity, final output, and an inspector for tools, WorkGraph, artifacts, and diagnostics. Events are read in sequence from the redacted Trajectory; a reconnect fetches saved records before following live updates. The interface shows `unknown` when a process or fact cannot be observed.
+## Conversation and observation
 
-Closing the browser leaves the local Studio process and its tasks running. After a process restart, Studio can read persisted history and manually resume a Session whose durable head is `paused` or `waiting_input`, provided the same config and factory are available. Studio does not automatically restart an in-flight run. Live pause, steer, approval, and Web fork are not available in this version. Use `qita` for the existing board, replay, and export commands.
+The left rail searches loaded conversations and pages through history; conversations can be renamed, pinned and archived. The center keeps user requests, Agent results and saved process facts in order, with a persistent composer. The right inspector separates timeline, tools, WorkGraph, artifacts and diagnostics. File and diff tabs appear only when an application declares them; a tab with no saved facts says so explicitly. The UI defaults to Chinese and can switch fully to English, with light/dark themes and a narrow-screen drawer.
 
-Studio is a loopback tool. It does not provide account-based remote access or a public sharing link. Share an existing redacted qita export or present the local page when demonstrating an Agent.
+A Studio conversation contains one or more **turns**. Each turn creates a distinct runtime Session. An optional adapter may compose a follow-up task after the last turn ends; the original terminal Session remains terminal. The response retains the input message separately from the composed task. A manual resume of an eligible paused Session creates a new run identity under that Session, and old run identities remain queryable. Studio never treats an open SSE connection as evidence that a task succeeded.
 
-## Local API contract
+The browser closing does not stop a run. After a service restart, history and persisted facts remain readable; an unobserved in-flight process is shown as `unknown`. A saved `paused` or `waiting_input` Session may be manually restored only when its configuration digest and runtime capability match. A changed factory or config may make restoration unavailable.
 
-The browser calls only the loopback service. `GET /api/agents` returns registry IDs, names, and descriptions; `GET /api/sessions` returns the latest 100 task launches. `POST /api/sessions` accepts only `{ "agent_id": "...", "task": "..." }` and queues one new Session. `GET /api/sessions/{id}` returns its observed status, persisted lifecycle, safe result or error code, and `can_resume`. `POST /api/sessions/{id}/resume` works only for a saved `paused` or `waiting_input` head with the same configuration digest. Tasks run through a single local worker queue in this release.
+**Current control limit:** the runtime does not yet provide a durable, cross-process approval resolver or general stop/cancel receipt. Studio therefore does not present working approval, pause, cancel, or steer controls. The reference coding Agent inherits this limit. Do not use a Studio continuation as a substitute for approval of a pending tool call.
 
-`GET /api/sessions/{id}/events?after=N&limit=100` reads up to 256 redacted Trajectory records after sequence `N`, returning `records`, `next_after`, `has_more`, and `unknown`. `GET /api/sessions/{id}/stream?after=N` streams the same saved records as SSE; reconnecting clients first page through the durable reader. A missing trace or a process that is no longer observed is shown as unknown, never as an empty successful run. API failures return a safe `error_code` without raw exception text. A session cookie, CSRF header, Origin check, and exact loopback Host check protect writes.
+## Local API
+
+- `GET /api/agents` and `GET /api/agents/{id}/capabilities` list local registry entries and declared presentation capabilities.
+- `GET /api/sessions?page=1&limit=50&before={id}` pages root conversations. `POST /api/sessions/search` submits bounded search text in a CSRF-protected JSON body, never in a URL. `GET /api/sessions/{id}/turns?after=N` pages their turns; `GET /api/sessions/{turn_id}/runs` lists recorded run identities. Legacy V1 launches migrate to one-turn conversations without invented missing runs.
+- `POST /api/sessions` accepts only `agent_id` and `task`. `POST /api/sessions/{conversation_id}/messages` accepts `message` only when the adapter and current state allow continuation. `PATCH /api/sessions/{conversation_id}` updates title, pin or archive metadata. `POST /api/sessions/{turn_id}/resume` invokes the existing Session restore contract.
+- `GET /api/sessions/{turn_id}/events?run_id={id}&after=N&limit=100` reads redacted durable Trajectory facts. `GET /api/sessions/{turn_id}/stream` follows them by SSE; clients backfill saved facts on reconnection. A run ID must belong to the requested turn.
+
+Writes require the process cookie, CSRF header, exact loopback Host and Origin. The service does not expose arbitrary host paths, private artifact bodies, or arbitrary imports. API failures return a safe `error_code` rather than raw exceptions.

@@ -20,6 +20,7 @@ How to update:
 ### Added
 
 - Add optional local QitOS Studio for registered Agents, task Sessions, redacted Trajectory inspection, and manual restore of eligible persisted Sessions.
+- Extend Studio with an optional application adapter, linked multi-turn conversations, paged history, saved run identities, capability-gated input, bilingual conversation UI, Docker image recipe, and an installable coding reference Agent. Pending approvals and live stop remain unavailable until the runtime has durable control receipts.
 
 - Six independently installable Agent Design Lab projects (ReAct, PlanAct, Pi-like, Claude-Code-like, Hermes-like and Voyager-inspired), with synchronized full-source EN/zh courses, installed/Docker consumers, real-model experiment runner and privacy-safe result aggregation. Recorded task failures are not represented as whole-lab live qualification.
 - Optional `build_agent_composition(agent_factory=...)` reuses the canonical model, tools, runtime and Session with custom AgentModule policies; invalid bindings fail and owned resources are cleaned.
