@@ -10,15 +10,16 @@ only the execution resources around it.
 1. One Engine or AsyncEngine instance admits one active run. Admission happens
    before resetting run state or installing stream hooks and callbacks. A
    cancelled async waiter does not release admission until its sync worker
-   actually finishes. Independent Engines may run concurrently.
+   actually finishes. A pre-start cancellation token survives Engine reset.
+   Independent Engines may run concurrently.
 2. `EventStream` has bounded thread-to-loop ingress. A full data queue cannot
    consume the close signal; accepted events drain before termination. A
    subscriber can be removed with `unsubscribe`.
 3. Ordinary `ExchangeLog` appends use a validated-prefix index. Public items
    and persistence input remain isolated and fully checked on construction;
-   a normal append validates only its new fact. The last item and its exchange
-   ID have narrow readers. Session skips prior-snapshot loading when there is
-   no current steering receipt to compare.
+   a normal append validates only its new fact. The last item, its exchange
+   ID and tool-result presence have narrow readers. Session skips
+   prior-snapshot loading when there is no current steering receipt to compare.
 4. A parallel tool segment submits at most `max_concurrency` in-flight slots.
    Timed blocking tools share a `ToolWorkerPool` with no waiting queue. A
    timed-out worker retains its capacity until its Future completes. An

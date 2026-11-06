@@ -500,6 +500,7 @@ class ExchangeLog:
         self._validated_log_id: Optional[str] = None
         self._known_item_ids: set[str] = set()
         self._open_batch: Optional[str] = None
+        self._has_tool_results = False
         self.validate()
 
     @property
@@ -521,6 +522,11 @@ class ExchangeLog:
         """Check a committed or queued identity without copying the log."""
         self.validate()
         return item_id in self._known_item_ids
+
+    def has_tool_results(self) -> bool:
+        """Read whether any canonical tool result was committed."""
+        self.validate()
+        return self._has_tool_results
 
     @property
     def queued_steering(self) -> tuple[SteeringItem, ...]:
@@ -733,6 +739,7 @@ class ExchangeLog:
                     )
         self._known_item_ids = item_ids
         self._open_batch = open_batches[0] if open_batches else None
+        self._has_tool_results = bool(result_keys)
         self._validated_revision = self._revision
         self._validated_schema = self.schema_version
         self._validated_log_id = self.log_id

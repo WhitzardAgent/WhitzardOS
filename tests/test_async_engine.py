@@ -21,6 +21,7 @@ from qitos import (
     tool,
 )
 from qitos.engine import RuntimeBudget
+from qitos.engine.cancellation import CancelToken
 from qitos.checkpoint import CheckpointConfig, CheckpointId
 from qitos.engine.states import RuntimePhase
 
@@ -89,6 +90,13 @@ def test_engine_rejects_overlapping_run_before_reset(monkeypatch):
         release.set()
         worker.join(timeout=3)
     assert not worker.is_alive()
+
+
+def test_pre_start_cancel_survives_engine_reset():
+    token = CancelToken()
+    token.request_cancel("immediate")
+    result = Engine(DemoAgent()).run("cancelled before start", _pre_start_cancel=token)
+    assert result.state.stop_reason == "cancelled_immediate"
 
 
 # --- EventStream tests ---
@@ -214,6 +222,37 @@ class TestEngineEventType:
 
 
 class TestAsyncEngine:
+    def test_arun_cancel_before_worker_enters_run(self, monkeypatch):
+        async def check():
+            engine = AsyncEngine(DemoAgent())
+            entered = threading.Event()
+            release = threading.Event()
+            results = []
+            original_run = engine.engine.run
+
+            def delayed_run(task, **kwargs):
+                entered.set()
+                assert release.wait(timeout=3)
+                result = original_run(task, **kwargs)
+                results.append(result)
+                return result
+
+            monkeypatch.setattr(engine.engine, "run", delayed_run)
+            waiter = asyncio.create_task(engine.arun("cancel before start"))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                waiter.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await waiter
+            finally:
+                release.set()
+            deadline = asyncio.get_running_loop().time() + 3
+            while not results and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.01)
+            assert results[0].state.stop_reason == "cancelled_immediate"
+
+        asyncio.run(check())
+
     def test_token_stream_overlap_does_not_replace_active_callback(self, monkeypatch):
         async def check():
             engine = AsyncEngine(DemoAgent())

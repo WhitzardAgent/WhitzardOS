@@ -29,7 +29,7 @@ from ..core.decision import Decision
 from ..core.errors import ErrorCategory, ModelExecutionError, StopReason
 from ..core.env import Env, EnvObservation, EnvStepResult
 from ..core.history import History, HistoryMessage, HistoryPolicy
-from ..core.conversation import ExchangeLog, ToolResultItem
+from ..core.conversation import ExchangeLog
 from ..core.interceptor import InterceptorChain, ToolInterceptor
 from ..core.memory import Memory, MemoryRecord
 from ..core.state import StateSchema
@@ -995,8 +995,11 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         _resume_state = kwargs.pop("_resume_state", None)
         _resume_step = kwargs.pop("_resume_step", None)
         _session_steering = kwargs.pop("_session_steering", None)
+        pre_start_cancel = kwargs.pop("_pre_start_cancel", None)
 
         self._reset_run_state()
+        if isinstance(pre_start_cancel, CancelToken) and pre_start_cancel.is_cancel_requested:
+            self._cancel_token.request_cancel(pre_start_cancel.mode.value)
         # Wire delegate interceptor to engine's event list
         if self._delegate_interceptor is not None:
             self._delegate_interceptor._event_sink = self.events
@@ -2591,10 +2594,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         restored_tool_use_satisfied = (
             self._session_handle is not None
             and isinstance(self._qitos_exchange_log, ExchangeLog)
-            and any(
-                isinstance(item, ToolResultItem)
-                for item in self._qitos_exchange_log.items
-            )
+            and self._qitos_exchange_log.has_tool_results()
         )
         self._trace_runtime.reset_run_state()
         self._last_runtime_error = None

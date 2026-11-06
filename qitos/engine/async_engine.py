@@ -8,6 +8,7 @@ from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, List, 
 
 from ..core.agent_module import AgentModule
 from ..core.state import StateSchema
+from .cancellation import CancelToken
 from .engine import Engine, EngineResult
 from .events import EngineEvent, EngineEventType, EventStream
 from .hooks import HookContext
@@ -41,6 +42,7 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
         self._workers: set[asyncio.Task[Any]] = set()
         self._active_hook: Optional[_StreamBridgeHook] = None
         self._run_admission = threading.Lock()
+        self._pre_start_cancel: Optional[CancelToken] = None
 
     def _admit_run(self) -> None:
         if not self._run_admission.acquire(blocking=False):
@@ -74,14 +76,25 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
         Python; it is asked to stop and drains on its own.
         """
         self._admit_run()
+        pre_start_cancel = CancelToken()
+        self._pre_start_cancel = pre_start_cancel
         try:
             run_task = asyncio.ensure_future(
-                asyncio.to_thread(self._engine.run, task, **kwargs)
+                asyncio.to_thread(
+                    self._engine.run, task,
+                    **{**kwargs, "_pre_start_cancel": pre_start_cancel},
+                )
             )
         except BaseException:
+            self._pre_start_cancel = None
             self._run_admission.release()
             raise
-        run_task.add_done_callback(lambda _: self._run_admission.release())
+
+        def finished(_: asyncio.Task[Any]) -> None:
+            self._pre_start_cancel = None
+            self._run_admission.release()
+
+        run_task.add_done_callback(finished)
         self._track_worker(run_task)
         try:
             return await asyncio.shield(run_task)
@@ -95,6 +108,9 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
         Thread-safe, idempotent, and usable after the run has started.
         Delegates to the underlying Engine's cancellation token.
         """
+        pre_start_cancel = self._pre_start_cancel
+        if pre_start_cancel is not None:
+            pre_start_cancel.request_cancel(mode)
         self._engine.cancel(mode)
 
     async def arun_stream(
@@ -120,6 +136,8 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
             Events that produce no TransformerOutput are suppressed.
         """
         self._admit_run()
+        pre_start_cancel = CancelToken()
+        self._pre_start_cancel = pre_start_cancel
         previous_callback = self._engine.stream_callback
         hook: Optional[_StreamBridgeHook] = None
         try:
@@ -134,7 +152,9 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
 
             def _run() -> EngineResult[StateT]:
                 try:
-                    return self._engine.run(task, **kwargs)
+                    return self._engine.run(
+                        task, **{**kwargs, "_pre_start_cancel": pre_start_cancel}
+                    )
                 finally:
                     stream.close()
 
@@ -146,6 +166,7 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
                 self._engine.hooks = [h for h in self._engine.hooks if h is not hook]
             self._active_hook = None
             self.event_stream = None
+            self._pre_start_cancel = None
             self._engine.stream_callback = previous_callback
             self._run_admission.release()
             raise
@@ -174,16 +195,27 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
                 if not run_task.done():
                     self.cancel("immediate")
                     stream.close()
-                    run_task.add_done_callback(lambda _: self._run_admission.release())
+
+                    def finished(_: asyncio.Task[Any]) -> None:
+                        self._pre_start_cancel = None
+                        self._run_admission.release()
+
+                    run_task.add_done_callback(finished)
                 else:
+                    self._pre_start_cancel = None
                     self._run_admission.release()
 
     def run(self, task: str, **kwargs: Any) -> EngineResult[StateT]:
         """Synchronous run (delegates to underlying Engine)."""
         self._admit_run()
+        pre_start_cancel = CancelToken()
+        self._pre_start_cancel = pre_start_cancel
         try:
-            return self._engine.run(task, **kwargs)
+            return self._engine.run(
+                task, **{**kwargs, "_pre_start_cancel": pre_start_cancel}
+            )
         finally:
+            self._pre_start_cancel = None
             self._run_admission.release()
 
     async def arun_stream_tokens(

@@ -171,6 +171,24 @@ def _result(
     )
 
 
+def test_tool_result_presence_reads_without_history_projection(monkeypatch: Any) -> None:
+    import qitos.core.conversation as conversation_module
+
+    log = ExchangeLog(log_id="tool_presence")
+    assert not log.has_tool_results()
+    call = _call("presence")
+    builder = log.append(_assistant_with_calls(call))
+    assert builder is not None
+    assert not log.has_tool_results()
+    builder.record_result(_result(call, item_id="presence_result"))
+
+    def forbid_copy(item: Any) -> Any:
+        raise AssertionError("narrow presence read copied a conversation fact")
+
+    monkeypatch.setattr(conversation_module, "_isolated_copy", forbid_copy)
+    assert log.has_tool_results()
+
+
 def _validate_fixture_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest.get("fixture_version") != FIXTURE_SCHEMA_VERSION:
         raise UnsupportedSchemaVersionError(
