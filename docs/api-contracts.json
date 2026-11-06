@@ -88,10 +88,11 @@
           "example": "trajectory = TrajectoryConfig(output=\"./notes-run/trajectory.journal\")"
         }
       ],
-      "baseline": "d000a42aff30b87c812850ac1019ca197f420c09"
+      "baseline": "1dab6219c9fd6d612e3178d8175c7904d98e4c9f"
     },
     {
       "slug": "agent-runtime",
+      "baseline": "1dab6219c9fd6d612e3178d8175c7904d98e4c9f",
       "tutorial": "guides/build-your-first-agent",
       "symbols": [
         {
@@ -171,6 +172,7 @@
     },
     {
       "slug": "sessions",
+      "baseline": "1dab6219c9fd6d612e3178d8175c7904d98e4c9f",
       "tutorial": "tutorials/checkpoint-and-fork",
       "symbols": [
         {
@@ -261,7 +263,7 @@
     },
     {
       "slug": "context",
-      "baseline": "d000a42aff30b87c812850ac1019ca197f420c09",
+      "baseline": "1dab6219c9fd6d612e3178d8175c7904d98e4c9f",
       "tutorial": "guides/memory-and-history",
       "symbols": [
         {
@@ -365,6 +367,7 @@
     },
     {
       "slug": "work-graph",
+      "baseline": "1dab6219c9fd6d612e3178d8175c7904d98e4c9f",
       "tutorial": "guides/multi-agent-patterns",
       "symbols": [
         {
@@ -527,7 +530,7 @@
           "methods": []
         }
       ],
-      "baseline": "f7d4b2d666a156d361da496a41868278f84ffabf"
+      "baseline": "1dab6219c9fd6d612e3178d8175c7904d98e4c9f"
     },
     {
       "slug": "skill-library",

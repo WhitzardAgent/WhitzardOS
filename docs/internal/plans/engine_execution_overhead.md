@@ -90,9 +90,12 @@ ordinary messages, replacing the earlier 10,100-call observed pattern.
 ## Verification record
 
 Targeted Engine/core/checkpoint/tracing/architecture tests: 592 passed after
-the first implementation slice; later pool and benchmark edits require a fresh
-run. The added capacity, close, context-propagation, full-queue and overlap
-regressions pass. Stable-surface flake8 and mypy pass. The public API source
-binding test rejects uncommitted changes to linked implementation files; it
-must be updated to a reviewed source commit and the generated EN/zh reference
-pages synchronized before release, not weakened.
+the first implementation slice. The full suite then reported 3946 passed,
+54 skipped, and three failures: the public API source binding plus two new
+compatibility regressions. The latter were fixed by retaining the existing
+aggregate export set and allowing composition cleanup with older runtime
+objects; their targeted tests pass. The kernel was committed as `1dab621`,
+then the manifest and generated EN/zh API pages were rebound to that exact
+source. The source-binding test passes without weakening its byte comparison.
+Stable-surface flake8, mypy and the static-quality ratchet pass. A final full
+suite and installed-wheel run are still required after the last fixes.
