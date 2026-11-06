@@ -214,3 +214,44 @@ def test_one_shot_compatibility_calls_do_not_leak_anchor_descriptors(journal):
     del reader
     gc.collect()
     assert anchor() is None
+
+
+def test_append_extends_index_without_redecoding_history(journal):
+    reader = candidate_file_reader(journal)
+    before_decode = reader.work.decoded_records
+    before_writes = reader.work.written_index_entries
+    with_writer = JournalTrajectoryStore(journal)
+    with_writer.append(record(259))
+    with_writer.close()
+    page = reader.read_page(TrajectoryQuery(after_sequence=258, limit=1))
+    assert [r.sequence for r in page.records] == [259]
+    assert reader.work.decoded_records - before_decode == 2
+    assert reader.work.written_index_entries - before_writes == 6
+    reader.close()
+
+
+def test_append_cannot_hide_mutated_indexed_prefix(journal):
+    reader = candidate_file_reader(journal)
+    writer = JournalTrajectoryStore(journal)
+    writer.append(record(259))
+    writer.close()
+    data = journal.read_bytes()
+    journal.write_bytes(data.replace(b'"i":0', b'"i":9', 1))
+    with pytest.raises(CursorRejected, match="snapshot_bytes_changed"):
+        reader.read_page(TrajectoryQuery(after_sequence=258, limit=1))
+    reader.close()
+
+
+def test_failed_append_index_transaction_can_retry(journal):
+    reader = candidate_file_reader(journal)
+    writer = JournalTrajectoryStore(journal)
+    writer.append(record(259))
+    writer.close()
+    valid = journal.read_bytes()
+    journal.write_bytes(valid + b'{"unfinished":')
+    with pytest.raises(StoreIntegrityError, match="incomplete"):
+        reader.read_page(TrajectoryQuery(after_sequence=258, limit=1))
+    journal.write_bytes(valid)
+    assert [r.sequence for r in reader.read_page(
+        TrajectoryQuery(after_sequence=258, limit=1)).records] == [259]
+    reader.close()

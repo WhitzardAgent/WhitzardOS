@@ -50,3 +50,9 @@ The browser closing does not stop a run. After a service restart, history and pe
 - `GET /api/sessions/{turn_id}/events?run_id={id}&after=N&limit=100` reads redacted durable Trajectory facts. `GET /api/sessions/{turn_id}/stream` follows them by SSE; clients backfill saved facts on reconnection. A run ID must belong to the requested turn.
 
 Writes require the process cookie, CSRF header, exact loopback Host and Origin. The service does not expose arbitrary host paths, private artifact bodies, or arbitrary imports. API failures return a safe `error_code` rather than raw exceptions.
+
+## Observation cost and service limits
+
+Studio accepts at most 32 outstanding tasks per service by default; excess submissions return `studio_queue_full` without creating a launch. Completed worker handles are released. Up to four journal readers are retained and closed on eviction or shutdown. Journal append refresh validates the indexed prefix and indexes only new frames. Every page still verifies snapshot bytes; read I/O therefore grows with journal size, even when decoding is bounded. JSON snapshot readers are never reused across requests.
+
+Paged sidebar/search responses are presentation summaries and omit restore capabilities. A previously running task with no observed owner is `unknown` until detail inspection reconciles its durable state. Session detail and mutation paths continue to perform fresh runtime checks. See the repository performance/completion plan for open checkpoint, SSE, and browser-history scalability work.

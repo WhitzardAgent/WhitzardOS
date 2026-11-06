@@ -184,3 +184,29 @@ The same lane's tests also exposed existing `CodingToolSet(auto_approve=True)`
 mutation of shared tool metadata. That broader permission-authority issue remains
 open; Lane C tests use executor-scoped approval instead and do not change the
 permission implementation.
+
+## Studio scale and completion audit (2026-11-06)
+
+Evidence and implementation sequence: `docs/internal/plans/studio_completion_performance.md`.
+
+- Fixed: per-page disposable reader reconstruction, historical frame redecoding
+  after journal append, retained completed Futures, unbounded task admission,
+  full checkpoint inspection for HTTP sidebar pages, and full-history latest
+  turn capability lookup.
+- Open: strict snapshot hashing is O(journal bytes) per page; one SSE connection
+  occupies one HTTP thread. Preserve tamper detection while designing shared
+  durable subscriptions or immutable segmented journals.
+- Open: conversation checkpoints serialize full accumulated state and read the
+  prior snapshot when committing steering receipts. Profile cumulative bytes,
+  serialization allocations and fsync latency before introducing component
+  deduplication. Never weaken atomic head ownership or recovery guarantees.
+- Open: browser events auto-drain all pages into memory; turn refresh overwrites
+  manually loaded pages. Implement explicit paging/windowing and stable merge
+  before claiming long-conversation qualification.
+- Open: linked coding turns create a new Session; private staged workspace
+  changes are not automatically publication authority or a continuation source.
+  Qualify retained-workspace transfer across linked Sessions before claiming
+  that a follow-up resumes the previous edited project.
+- Open: V5-05 exact-request durable approval and owner-fenced control receipts,
+  authorized resource bodies/diffs, and live-model coding qualification remain
+  requirements of the approved Studio scope.

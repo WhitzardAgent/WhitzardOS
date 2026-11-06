@@ -27,6 +27,8 @@ the application and provider.
 
 ## What's New
 
+- Studio now bounds queued tasks and cached trajectory readers, releases completed workers, and serves lightweight sidebar summaries. Journal paging extends verified indexes after append instead of decoding old records again; full integrity checks remain enabled. See the [performance and completion plan](docs/internal/plans/studio_completion_performance.md).
+
 - QitOS Studio adds a local Web workbench for registered declarative and custom Agents, task Sessions, live Trajectory inspection, and manual restore of eligible persisted Sessions. See the [Studio guide](docs/guides/studio.mdx).
 - Studio now groups linked turns under one conversation, offers a Chinese/English Codex-inspired workbench, paged history, capability-gated follow-up input, and a [standalone coding Agent example](examples/projects/studio_coding/README.md). A [local Docker image recipe](docker/studio/README.md) is included.
 - Documentation links now reject unpublished branch targets, verify immutable first-party source objects, and keep Chinese pages on Chinese routes; the memory guide's broken consumer link is repaired.

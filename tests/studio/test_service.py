@@ -237,3 +237,100 @@ def test_old_launch_rows_migrate_without_inventing_missing_runs(tmp_path: Path) 
         assert service.get_session("legacy")["conversation_id"] == "legacy"
         assert service.get_session("legacy")["turn_index"] == 0
         assert service.runs("legacy") == []
+
+
+def test_admission_is_bounded_and_completed_handles_are_released(tmp_path):
+    gate = Event()
+    service = _service(tmp_path, gate)
+    service._max_pending = 1
+    try:
+        service.start("demo", "Inspect this")
+        with pytest.raises(StudioError, match="studio_queue_full"):
+            service.start("demo", "Inspect this overflow")
+        assert len(service.list_sessions()) == 1
+        gate.set()
+        service.wait_for_idle()
+        assert service._futures == {}
+        service.start("demo", "Inspect this next")
+        service.wait_for_idle()
+    finally:
+        gate.set()
+        service.close()
+    with pytest.raises(StudioError, match="studio_closed"):
+        service.start("demo", "Inspect this after shutdown")
+
+
+def test_reader_cache_reuses_bounds_evicts_and_closes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import qitos.studio.service as module
+
+    opened, closed = [], []
+
+    def factory(path):
+        opened.append(path)
+        return SimpleNamespace(close=lambda: closed.append(path))
+
+    monkeypatch.setattr(module, "default_reader", factory)
+    service = _service(tmp_path, Event())
+    service._max_readers = 2
+    paths = [tmp_path / f"{i}.journal" for i in range(3)]
+    for path in paths:
+        path.touch()
+    with service._trajectory_reader(paths[0]) as first:
+        pass
+    with service._trajectory_reader(paths[0]) as again:
+        assert again is first
+    for path in paths[1:]:
+        with service._trajectory_reader(path):
+            pass
+    assert opened == paths
+    assert closed == paths[:1]
+    service.close()
+    assert closed == paths
+
+
+def test_capabilities_do_not_materialize_conversation_history(tmp_path, monkeypatch):
+    gate = Event()
+    gate.set()
+    with _service(tmp_path, gate) as service:
+        launch = service.start("demo", "Inspect this")
+        service.wait_for_idle()
+        monkeypatch.setattr(service, "_conversation_rows", lambda *_: pytest.fail("unbounded history read"))
+        assert service.agent_capabilities("demo", launch["id"])["operations"]["start"]["available"]
+
+
+def test_sidebar_summary_does_not_decode_checkpoint_or_grant_restore(tmp_path, monkeypatch):
+    gate = Event()
+    gate.set()
+    with _service(tmp_path, gate) as service:
+        launch = service.start("demo", "Inspect this")
+        service.wait_for_idle()
+        monkeypatch.setattr(service, "_inspect", lambda *_: pytest.fail("checkpoint decode"))
+        row = service.list_sessions_page(summary=True)["items"][0]
+        assert row["status"] == "completed"
+        assert "can_resume" not in row
+        service._update(launch["id"], status="running")
+        assert service.list_sessions_page(summary=True)["items"][0]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_unbounded_json_source_is_rejected_before_materialization(tmp_path, monkeypatch, directory):
+    import qitos.studio.service as module
+    from qitos.tracing.paging import BoundedReadUnsupported
+
+    source = tmp_path / "trajectory.json"
+    source.write_text('{"records":[]}')
+    monkeypatch.setattr(module, "default_reader", lambda *_: pytest.fail("materialized JSON"))
+    with _service(tmp_path, Event()) as service:
+        with pytest.raises(BoundedReadUnsupported):
+            with service._trajectory_reader(tmp_path if directory else source):
+                pytest.fail("unsupported source yielded")
+
+
+def test_launch_commits_before_worker_submission(tmp_path, monkeypatch):
+    gate = Event()
+    with _service(tmp_path, gate) as service:
+        def submitted(launch_id, *_):
+            assert service._row(launch_id)["status"] == "queued"
+        monkeypatch.setattr(service, "_submit", submitted)
+        service.start("demo", "Inspect this")

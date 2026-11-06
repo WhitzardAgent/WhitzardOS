@@ -50,3 +50,9 @@ Studio 监听 `127.0.0.1:8766`，默认打开浏览器。启动索引默认位�
 - `GET /api/sessions/{turn_id}/events?run_id={id}&after=N&limit=100` 读取已脱敏的持久化轨迹；`GET /api/sessions/{turn_id}/stream` 通过 SSE 跟随。重连时先补读轨迹。run ID 必须属于指定轮次。
 
 写请求需要进程会话 Cookie、CSRF 请求头、精确的 loopback Host 与 Origin。服务不提供任意宿主路径、私有 artifact 正文或任意 Python 导入。失败只返回安全错误码，不返回原始异常文本。
+
+## 观测开销与服务限制
+
+Studio 默认最多接受 32 个尚未结束的任务；超额提交返回 `studio_queue_full`，不创建任务记录。任务结束后释放 Future 引用。服务最多保留 4 个 journal reader，淘汰或关闭服务时释放索引和文件资源。轨迹追加时先验证已索引前缀，再索引新帧；每次分页仍校验快照字节，因此读取 I/O 仍随轨迹大小增长。JSON 快照 reader 不跨请求复用。
+
+分页侧栏和搜索返回展示摘要，不提供恢复能力。旧进程留下的运行标记在没有当前 owner 时显示 `unknown`，详情检查才与持久状态核对。Session 详情和执行操作仍进行实时运行时检查。checkpoint、SSE 和浏览器长历史的后续扩展见仓库性能与补全计划。

@@ -19,6 +19,8 @@ How to update:
 
 ### Added
 
+- Bound Studio outstanding tasks and reader cache ownership; release completed Future handles, use checkpoint-free sidebar summaries and indexed latest-turn capability lookup. Incrementally extend journal page indexes while preserving full-prefix verification and rollback on incomplete writes.
+
 - Add optional local QitOS Studio for registered Agents, task Sessions, redacted Trajectory inspection, and manual restore of eligible persisted Sessions.
 - Extend Studio with an optional application adapter, linked multi-turn conversations, paged history, saved run identities, capability-gated input, bilingual conversation UI, Docker image recipe, and an installable coding reference Agent. Pending approvals and live stop remain unavailable until the runtime has durable control receipts.
 

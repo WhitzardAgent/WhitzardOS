@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -44,7 +45,16 @@ class StudioService:
         composition_builder: Callable[[AgentSpec, Any, Any], Any] | None = None,
         session_inspector: Callable[[Any, str], dict[str, Any]] = _inspect_persisted_session,
         max_workers: int = 1,
+        max_pending: int = 32,
+        max_readers: int = 4,
     ) -> None:
+        if max_pending < 1 or max_readers < 1:
+            raise ValueError("studio_limits_invalid")
+        self._max_pending = max_pending
+        self._max_readers = max_readers
+        self._closed = False
+        self._reader_lock = RLock()
+        self._readers: OrderedDict[Path, Any] = OrderedDict()
         self.agents = dict(agents)
         self.state_path = Path(state_path).expanduser().resolve()
         self.credential_path = Path(credential_path).expanduser().resolve()
@@ -74,6 +84,8 @@ class StudioService:
                 launch_id TEXT NOT NULL, run_id TEXT NOT NULL,
                 created_at TEXT NOT NULL, PRIMARY KEY (launch_id, run_id))""")
             db.execute("CREATE INDEX IF NOT EXISTS launches_conversation ON launches(conversation_id, turn_index)")
+            db.execute("CREATE INDEX IF NOT EXISTS launches_sidebar "
+                       "ON launches(turn_index, archived, pinned DESC, created_at DESC, id DESC)")
             # Legacy launches are one-turn conversations. Missing historical run
             # identities remain unknown rather than being fabricated.
             db.execute("UPDATE launches SET conversation_id = id, turn_index = 0 WHERE conversation_id IS NULL")
@@ -124,6 +136,7 @@ class StudioService:
         launch_id = str(uuid.uuid4())
         timestamp = _now()
         with self._lock, self._db() as db:
+            self._check_admission()
             turn_index = 0
             if conversation_id is not None:
                 last = db.execute(
@@ -139,9 +152,10 @@ class StudioService:
                 (launch_id, agent_id, task.strip(), timestamp, timestamp,
                  conversation_id or launch_id, turn_index, message or task.strip()),
             )
-            self._futures[launch_id] = self._pool.submit(
-                self._execute, launch_id, spec, config, task.strip(), False,
-            )
+            # The worker opens an independent connection; publish its launch
+            # before scheduling so a fast composition cannot observe no row.
+            db.commit()
+            self._submit(launch_id, spec, config, task.strip(), False)
         return self.get_session(launch_id)
 
     def submit_message(self, conversation_id: str, message: str) -> dict[str, Any]:
@@ -173,6 +187,7 @@ class StudioService:
 
     def resume(self, launch_id: str) -> dict[str, Any]:
         with self._lock:
+            self._check_admission()
             row = self._row(launch_id)
             if launch_id in self._futures and not self._futures[launch_id].done():
                 raise StudioError("session_busy")
@@ -190,10 +205,25 @@ class StudioService:
             if inspected.get("lifecycle") not in {"paused", "waiting_input"}:
                 raise StudioError("session_not_resumable")
             self._update(launch_id, status="queued", error_code=None)
-            self._futures[launch_id] = self._pool.submit(
-                self._execute, launch_id, spec, config, row["task"], True,
-            )
+            self._submit(launch_id, spec, config, row["task"], True)
         return self.get_session(launch_id)
+
+    def _check_admission(self) -> None:
+        if self._closed:
+            raise StudioError("studio_closed")
+        if len(self._futures) >= self._max_pending:
+            raise StudioError("studio_queue_full")
+
+    def _submit(self, launch_id: str, spec: AgentSpec, config: Any, task: str, resume: bool) -> None:
+        future = self._pool.submit(self._execute, launch_id, spec, config, task, resume)
+        self._futures[launch_id] = future
+
+        def release(done: Future[Any]) -> None:
+            with self._lock:
+                if self._futures.get(launch_id) is done:
+                    del self._futures[launch_id]
+
+        future.add_done_callback(release)
 
     def _execute(self, launch_id: str, spec: AgentSpec, config: Any, task: str, resume: bool) -> None:
         try:
@@ -239,7 +269,7 @@ class StudioService:
                 (*values, launch_id),
             )
 
-    def _public_row(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _public_row(self, row: sqlite3.Row, *, inspect_runtime: bool = True) -> dict[str, Any]:
         result = {key: row[key] for key in (
             "id", "agent_id", "task", "session_id", "run_id", "status",
             "error_code", "created_at", "updated_at", "conversation_id", "turn_index",
@@ -260,7 +290,7 @@ class StudioService:
         if row["status"] in {"queued", "running"} and not active:
             result["status"] = "unknown"
             result["error_code"] = "process_not_observed"
-        if row["session_id"]:
+        if inspect_runtime and row["session_id"]:
             spec = self.agents.get(row["agent_id"])
             if spec is not None:
                 try:
@@ -289,7 +319,7 @@ class StudioService:
                     (row["id"],),
                 ).fetchone()
             if latest is not None and latest["id"] != row["id"]:
-                result["latest_status"] = self._public_row(latest)["status"]
+                result["latest_status"] = self._public_row(latest, inspect_runtime=inspect_runtime)["status"]
             else:
                 result["latest_status"] = result["status"]
         return result
@@ -324,7 +354,11 @@ class StudioService:
             row = self._row(launch_id)
             if row["agent_id"] != agent_id:
                 raise StudioError("agent_mismatch")
-            latest = self._conversation_rows(row["conversation_id"])[-1]
+            with self._db() as db:
+                latest = db.execute(
+                    "SELECT * FROM launches WHERE conversation_id = ? ORDER BY turn_index DESC LIMIT 1",
+                    (row["conversation_id"],),
+                ).fetchone()
             current = self._public_row(latest)
             terminal = current["status"] not in {"queued", "running", "unknown"}
             result["operations"]["message"] = {
@@ -346,7 +380,7 @@ class StudioService:
 
     def list_sessions_page(self, *, before: str | None = None, limit: int = 50,
                            include_archived: bool = False,
-                           search: str = "") -> dict[str, Any]:
+                           search: str = "", summary: bool = False) -> dict[str, Any]:
         if limit < 1 or limit > 100:
             raise StudioError("page_limit_invalid")
         if before is not None and (len(before) > 80 or not before):
@@ -372,7 +406,7 @@ class StudioService:
             rows = db.execute(f"SELECT * FROM launches WHERE {where} "
                               "ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ?",
                               (*args, limit + 1)).fetchall()
-        items = [self._public_row(row) for row in rows[:limit]]
+        items = [self._public_row(row, inspect_runtime=not summary) for row in rows[:limit]]
         return {"items": items, "next_before": items[-1]["id"] if len(rows) > limit else None}
 
     def _conversation_rows(self, conversation_id: str) -> list[sqlite3.Row]:
@@ -439,13 +473,12 @@ class StudioService:
         config = self._config(spec)
         source = (Path(config.runtime.trajectory.output).expanduser().resolve()
                   if config.runtime.trajectory.output else _session_store_path(config).parent)
-        reader = None
         try:
-            reader = default_reader(source)
-            page = read_page(
-                reader, TrajectoryQuery(run_id=selected_run, after_sequence=after, limit=limit),
-                view=PrivacyView.REDACTED_PUBLIC,
-            )
+            with self._trajectory_reader(source) as reader:
+                page = read_page(
+                    reader, TrajectoryQuery(run_id=selected_run, after_sequence=after, limit=limit),
+                    view=PrivacyView.REDACTED_PUBLIC,
+                )
             records = [project_data(record.to_dict(), view=PrivacyView.SAFE_DIAGNOSTIC).data
                        for record in page.records]
             next_after = max((record.sequence or 0 for record in page.records), default=after)
@@ -454,14 +487,57 @@ class StudioService:
                     "has_more": page.next_cursor is not None}
         except (OSError, ValueError, BoundedReadUnsupported) as exc:
             raise StudioError("trajectory_unavailable") from exc
-        finally:
-            close = getattr(reader, "close", None)
-            if callable(close):
-                close()
+
+    @contextmanager
+    def _trajectory_reader(self, source: Path) -> Iterator[Any]:
+        # Journal readers revalidate bytes on every page; JSON readers are
+        # materialized snapshots and must never be reused across requests.
+        with self._reader_lock:
+            if self._closed:
+                raise StudioError("studio_closed")
+            if ((source.is_file() and source.suffix != ".journal")
+                    or (source.is_dir() and not (source / "trajectory.journal").is_file()
+                        and (source / "trajectory.json").is_file())):
+                # The JSON adapter materializes the entire file before reporting
+                # bounded_read=False. Reject before allocating that snapshot.
+                raise BoundedReadUnsupported("historical_bounded_read_unsupported")
+            cacheable = ((source.suffix == ".journal" and source.is_file())
+                         or (source.is_dir() and (source / "trajectory.journal").is_file()))
+            reader = self._readers.pop(source, None) if cacheable else None
+            if reader is None:
+                reader = default_reader(source)
+            if cacheable:
+                self._readers[source] = reader
+                while len(self._readers) > self._max_readers:
+                    _, evicted = self._readers.popitem(last=False)
+                    evicted.close()
+            try:
+                yield reader
+            except BaseException:
+                if cacheable:
+                    self._readers.pop(source, None)
+                    reader.close()
+                raise
+            finally:
+                if not cacheable:
+                    close = getattr(reader, "close", None)
+                    if callable(close):
+                        close()
 
     def wait_for_idle(self) -> None:
-        for future in list(self._futures.values()):
-            future.result()
+        while True:
+            with self._lock:
+                pending = list(self._futures.values())
+            if not pending:
+                return
+            for future in pending:
+                future.result()
 
     def close(self) -> None:
+        with self._lock:
+            self._closed = True
         self._pool.shutdown(wait=True)
+        with self._reader_lock:
+            for reader in self._readers.values():
+                reader.close()
+            self._readers.clear()

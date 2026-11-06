@@ -113,7 +113,7 @@ def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequ
                         self._json(200, service.list_sessions_page(
                             before=qs.get("before", [None])[0],
                             limit=int(qs.get("limit", ["50"])[0]),
-                            include_archived=qs.get("archived") == ["1"],
+                            include_archived=qs.get("archived") == ["1"], summary=True,
                         ))
                     else:
                         self._json(200, service.list_sessions())
@@ -200,7 +200,7 @@ def make_handler(service: StudioService, static_root: Path) -> type[BaseHTTPRequ
                         raise StudioError("request_invalid")
                     self._json(200, service.list_sessions_page(
                         search=body["query"], limit=body["limit"],
-                        before=body["before"], include_archived=body["archived"],
+                        before=body["before"], include_archived=body["archived"], summary=True,
                     ))
                     return
                 if path == "/api/sessions":

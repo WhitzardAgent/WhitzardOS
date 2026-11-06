@@ -146,7 +146,7 @@ class JournalPages:
         return hmac.new(self._key, f"{actual.st_dev}:{actual.st_ino}".encode(),
                         hashlib.sha256).hexdigest()
 
-    def _hash(self, handle: Any, boundary: int) -> str:
+    def _hash_state(self, handle: Any, boundary: int) -> Any:
         handle.seek(0)
         digest = hashlib.sha256()
         remaining = boundary
@@ -158,7 +158,10 @@ class JournalPages:
             self.work.hash_bytes += len(chunk)
             digest.update(chunk)
             remaining -= len(chunk)
-        return digest.hexdigest()
+        return digest
+
+    def _hash(self, handle: Any, boundary: int) -> str:
+        return self._hash_state(handle, boundary).hexdigest()
 
     def _verify(self, handle: Any, head: dict[str, Any]) -> None:
         if self._identity(handle) != head["source"]:
@@ -173,11 +176,20 @@ class JournalPages:
         if self._head and self._head["source"] == source and self._head["boundary"] == size:
             self._verify(handle, self._head)
             return dict(self._head)
-        handle.seek(0)
-        digest = hashlib.sha256()
+        # Revalidate the entire indexed prefix before reusing its addresses.
+        # Metadata/mtime alone never establishes integrity. Only new complete
+        # frames are decoded and indexed; a failed suffix rolls back atomically.
         sequence, offset, previous = 0, 0, None
+        digest = hashlib.sha256()
+        if self._head is not None:
+            offset = self._head["boundary"]
+            digest = self._hash_state(handle, offset)
+            if digest.hexdigest() != self._head["bytes_digest"]:
+                raise CursorRejected("snapshot_bytes_changed")
+            sequence = self._head["head_sequence"] + 1
+            previous = self._head["head_digest"]
+        handle.seek(offset)
         self._db.execute("BEGIN")
-        self._db.execute("DELETE FROM records")
         try:
             while offset < size:
                 line = handle.readline(_MAX_FRAME_BYTES + 1)
