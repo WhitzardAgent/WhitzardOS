@@ -92,7 +92,7 @@
     },
     {
       "slug": "agent-runtime",
-      "baseline": "1dab6219c9fd6d612e3178d8175c7904d98e4c9f",
+      "baseline": "022366484dbb24c7327eea07d602fa1e347be2fb",
       "tutorial": "guides/build-your-first-agent",
       "symbols": [
         {
@@ -530,7 +530,7 @@
           "methods": []
         }
       ],
-      "baseline": "1dab6219c9fd6d612e3178d8175c7904d98e4c9f"
+      "baseline": "022366484dbb24c7327eea07d602fa1e347be2fb"
     },
     {
       "slug": "skill-library",
