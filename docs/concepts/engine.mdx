@@ -198,6 +198,20 @@ This is equivalent to `Engine(agent=agent, ...)` and is what `agent.run()` calls
 
 `AsyncEngine` provides non-blocking execution for agent workflows. It wraps the same `Engine` loop but runs blocking calls in a thread pool, making it safe to use inside `asyncio` event loops.
 
+Each Engine instance admits one active run. Start concurrent runs with separate instances. An overlapping call raises `RuntimeError` before the existing run's state or stream hooks change. Cancelling an async waiter requests cancellation; the instance remains occupied until its worker exits. `EventStream` buffers are bounded and drain accepted events before ending, including when a buffer was full at close. Call `unsubscribe(queue)` when a fan-out consumer leaves early.
+
+Serial tools without a deadline run directly. A timed synchronous tool uses a reusable worker pool owned by `RuntimeComposition`; the pool is created on first use, with active attempts bounded by `ActionExecutionPolicy.max_concurrency`. A timed-out Python worker keeps its slot until the call finishes. Further attempts receive `tool_worker_capacity` with `executed: false`. A host can inject the same `ToolWorkerPool(max_active=N)` into each Engine's `RuntimeComposition`; the host owns and closes that injected pool. `AgentComposition.close()` closes a pool created by its runtime and reports workers still running. This is cooperative timeout observation, not hard thread termination.
+
+```python
+from qitos.engine import RuntimeComposition
+from qitos.engine.action_executor import ToolWorkerPool
+
+shared_tool_workers = ToolWorkerPool(max_active=8)
+runtime = RuntimeComposition(tool_worker_pool=shared_tool_workers)
+# Give each Engine its own RuntimeComposition with this same pool.
+# The host calls shared_tool_workers.close() after all runs finish.
+```
+
 Illustrative fragment (not a standalone program; use the complete example linked on this page).
 
 ```python

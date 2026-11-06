@@ -1,6 +1,7 @@
 """Tests for AsyncEngine, EventStream, and async model adapters."""
 
 import asyncio
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,6 +21,7 @@ from qitos import (
     tool,
 )
 from qitos.engine import RuntimeBudget
+from qitos.checkpoint import CheckpointConfig, CheckpointId
 from qitos.engine.states import RuntimePhase
 
 
@@ -63,10 +65,65 @@ class DemoAgent(AgentModule[DemoState, dict[str, Any], Action]):
         return state
 
 
+def test_engine_rejects_overlapping_run_before_reset(monkeypatch):
+    engine = Engine(DemoAgent())
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked(task, **kwargs):
+        entered.set()
+        assert release.wait(timeout=3)
+
+    monkeypatch.setattr(engine, "_run_impl", blocked)
+    worker = threading.Thread(target=engine.run, args=("first",))
+    worker.start()
+    try:
+        assert entered.wait(timeout=3)
+        with pytest.raises(RuntimeError, match="active run"):
+            engine.run("second")
+        with pytest.raises(RuntimeError, match="active run"):
+            engine.resume_from_checkpoint(CheckpointConfig(
+                thread_id="old", checkpoint_id=CheckpointId("missing"),
+            ))
+    finally:
+        release.set()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+
+
 # --- EventStream tests ---
 
 
 class TestEventStream:
+    def test_full_queue_closes_after_drain(self):
+        async def consume():
+            stream = EventStream()
+            event = EngineEvent(event_type=EngineEventType.STEP_START)
+            for _ in range(4096):
+                stream.emit(event)
+            stream.close()
+            seen = 0
+            async for _ in stream:
+                seen += 1
+            assert seen == 4096
+
+        asyncio.run(asyncio.wait_for(consume(), timeout=3))
+
+    def test_worker_thread_emission_wakes_waiting_consumer(self):
+        async def consume():
+            stream = EventStream()
+            async def read():
+                return [event async for event in stream]
+            reader = asyncio.create_task(read())
+            await asyncio.sleep(0)
+            def produce():
+                stream.emit_sync(EngineEvent(event_type=EngineEventType.RUN_START))
+                stream.close()
+            await asyncio.to_thread(produce)
+            assert len(await reader) == 1
+
+        asyncio.run(asyncio.wait_for(consume(), timeout=3))
+
     def test_emit_and_iterate(self):
         stream = EventStream()
         events = []
@@ -157,6 +214,37 @@ class TestEngineEventType:
 
 
 class TestAsyncEngine:
+    def test_token_stream_overlap_does_not_replace_active_callback(self, monkeypatch):
+        async def check():
+            engine = AsyncEngine(DemoAgent())
+            entered = threading.Event()
+            release = threading.Event()
+
+            def blocked(task, **kwargs):
+                entered.set()
+                assert release.wait(timeout=3)
+
+            monkeypatch.setattr(engine.engine, "_run_impl", blocked)
+            first = engine.arun_stream("first")
+            first_read = asyncio.create_task(first.__anext__())
+            assert await asyncio.to_thread(entered.wait, 3)
+            active_callback = engine.engine.stream_callback
+            second = engine.arun_stream_tokens("second")
+            try:
+                with pytest.raises(RuntimeError, match="active run"):
+                    await second.__anext__()
+                with pytest.raises(RuntimeError, match="active run"):
+                    engine.run("second")
+                assert engine.engine.stream_callback is active_callback
+            finally:
+                release.set()
+                await second.aclose()
+                with pytest.raises(StopAsyncIteration):
+                    await first_read
+                await first.aclose()
+
+        asyncio.run(check())
+
     def test_arun_returns_result(self):
         agent = DemoAgent(answer="hello world")
         engine = AsyncEngine(agent=agent, budget=RuntimeBudget(max_steps=5))

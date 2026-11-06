@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence, runtime_checkable
@@ -189,8 +190,11 @@ class RuntimeComposition:
     launch_metadata: Mapping[str, Any] = field(default_factory=dict)
     context_model_runtime: Optional[ContextModelRuntime] = None
     work_runtime: Any = None
+    tool_worker_pool: Any = None
     event_sink_reports: list[Any] = field(default_factory=list, init=False)
     _event_dispatcher: Any = field(default=None, init=False, repr=False)
+    _tool_worker_pool_owned: bool = field(default=False, init=False, repr=False)
+    _tool_worker_pool_lock: Any = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         from ._snapshot_components import DEFAULT_RUNTIME_SNAPSHOT_COMPONENTS
@@ -255,6 +259,11 @@ class RuntimeComposition:
             required = ("capability_id", "submit", "recover", "request_cancel")
             if any(not hasattr(self.work_runtime, name) for name in required):
                 raise TypeError("work_runtime does not implement the runtime seam")
+        if self.tool_worker_pool is not None and any(
+            not callable(getattr(self.tool_worker_pool, name, None))
+            for name in ("submit", "close")
+        ):
+            raise TypeError("tool_worker_pool must provide submit() and close()")
 
     @classmethod
     def from_resolvers(
@@ -285,6 +294,24 @@ class RuntimeComposition:
             self.checkpoint_store,
         )
         return self.checkpoint_store
+
+    def get_tool_worker_pool(self, max_active: int = 4) -> Any:
+        """Return the process-local pool, creating it only for managed tool work."""
+        with self._tool_worker_pool_lock:
+            if self.tool_worker_pool is None:
+                from .action_executor import ToolWorkerPool
+
+                self.tool_worker_pool = ToolWorkerPool(max_active=max_active)
+                self._tool_worker_pool_owned = True
+            return self.tool_worker_pool
+
+    def close_tool_worker_pool(self) -> Any:
+        with self._tool_worker_pool_lock:
+            if self._tool_worker_pool_owned and self.tool_worker_pool is not None:
+                receipt = self.tool_worker_pool.close()
+                self._tool_worker_pool_owned = False
+                return receipt
+            return None
 
     @property
     def component_registry(self) -> SnapshotComponentRegistry:

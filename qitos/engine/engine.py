@@ -429,6 +429,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         self._model_requests_consumed: int = 0
         self._model_requests_reserved: int = 0
         self._session_runtime_lock = threading.RLock()
+        self._run_admission = threading.Lock()
         self._active_run_id: str = ""
         self._session_handle: Any = None
         self._session_run_id: str = ""
@@ -538,6 +539,9 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             permission_interaction_callback=self._permission_interaction_callback,
             interceptor_chain=self._interceptor_chain,
             auto_approve=self.auto_approve,
+            worker_pool_provider=lambda: self.runtime.get_tool_worker_pool(
+                max_active=max(1, int(getattr(self._action_execution_policy, "max_concurrency", 4)))
+            ),
         )
 
     @staticmethod
@@ -979,6 +983,14 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         return self._tracing_provider
 
     def run(self, task: str | Task, **kwargs: Any) -> EngineResult[StateT]:
+        if not self._run_admission.acquire(blocking=False):
+            raise RuntimeError("this Engine already has an active run")
+        try:
+            return self._run_impl(task, **kwargs)
+        finally:
+            self._run_admission.release()
+
+    def _run_impl(self, task: str | Task, **kwargs: Any) -> EngineResult[StateT]:
         # Check for resume-from-checkpoint internal kwargs
         _resume_state = kwargs.pop("_resume_state", None)
         _resume_step = kwargs.pop("_resume_step", None)
@@ -2137,6 +2149,16 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         Returns:
             EngineResult from the resumed run.
         """
+        if not self._run_admission.acquire(blocking=False):
+            raise RuntimeError("this Engine already has an active run")
+        try:
+            return self._resume_from_checkpoint_impl(config)
+        finally:
+            self._run_admission.release()
+
+    def _resume_from_checkpoint_impl(
+        self, config: CheckpointConfig
+    ) -> EngineResult:
         if self._checkpoint_store is None:
             raise RuntimeError("No checkpoint_store configured; cannot resume.")
 
@@ -2167,7 +2189,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             self._pending_write_manager.load_pending_from_store(resume_config)
 
         # Continue the run from the next step
-        return self.run(
+        return self._run_impl(
             self._active_task,
             _resume_state=state,
             _resume_step=checkpoint.step + 1,
@@ -2198,14 +2220,17 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             # Default: map to the first interrupt
             values["int_1"] = resume_value
 
-        _set_resume_values(values)
-
-        config = CheckpointConfig(
-            thread_id=self._active_run_id,
-            checkpoint_id=checkpoint_id,
-        )
-        result = self.resume_from_checkpoint(config)
-        return result
+        if not self._run_admission.acquire(blocking=False):
+            raise RuntimeError("this Engine already has an active run")
+        try:
+            _set_resume_values(values)
+            config = CheckpointConfig(
+                thread_id=self._active_run_id,
+                checkpoint_id=checkpoint_id,
+            )
+            return self._resume_from_checkpoint_impl(config)
+        finally:
+            self._run_admission.release()
 
     def _save_interrupt_checkpoint(
         self,

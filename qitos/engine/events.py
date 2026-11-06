@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import threading
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .states import RuntimePhase
@@ -64,6 +66,66 @@ class EngineEvent:
         return d
 
 
+class _ClosingQueue(asyncio.Queue[Optional[EngineEvent]]):
+    """Bounded cross-thread ingress with a close signal outside queue capacity."""
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__(maxsize=maxsize)
+        self._pending: deque[Optional[EngineEvent]] = deque()
+        self._lock = threading.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._scheduled = False
+        self._closed = False
+
+    def put_nowait(self, item: Optional[EngineEvent]) -> None:
+        with self._lock:
+            if self._closed:
+                raise asyncio.QueueFull
+            if self.qsize() + len(self._pending) >= self.maxsize:
+                raise asyncio.QueueFull
+            if self._loop is None:
+                super().put_nowait(item)
+                return
+            self._pending.append(item)
+            self._schedule_locked()
+
+    def _schedule_locked(self) -> None:
+        if self._loop is not None and not self._scheduled:
+            self._scheduled = True
+            self._loop.call_soon_threadsafe(self._flush)
+
+    def _flush(self) -> None:
+        with self._lock:
+            self._scheduled = False
+            while self._pending and not self.full():
+                super().put_nowait(self._pending.popleft())
+            if self._closed and self.empty() and not self._pending:
+                super().put_nowait(None)
+
+    async def get(self) -> Optional[EngineEvent]:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._loop is None:
+                self._loop = loop
+            elif self._loop is not loop:
+                raise RuntimeError("event queue belongs to another event loop")
+            self._schedule_locked()
+        if self._closed and self.empty() and not self._pending:
+            return None
+        item = await super().get()
+        self._flush()
+        return item
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            if self._loop is None:
+                if self.empty():
+                    super().put_nowait(None)
+            else:
+                self._schedule_locked()
+
+
 class EventStream:
     """Async-compatible event stream for consuming engine events.
 
@@ -80,15 +142,15 @@ class EventStream:
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[Optional[EngineEvent]] = asyncio.Queue(maxsize=4096)
-        self._subscribers: List[asyncio.Queue[Optional[EngineEvent]]] = []
+        self._queue: _ClosingQueue = _ClosingQueue(maxsize=4096)
+        self._subscribers: List[_ClosingQueue] = []
         self._closed = False
 
     def emit(self, event: EngineEvent) -> None:
         """Emit an event to all subscribers (thread-safe for sync callers)."""
         if self._closed:
             return
-        for q in self._subscribers:
+        for q in tuple(self._subscribers):
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:
@@ -105,15 +167,9 @@ class EventStream:
     def close(self) -> None:
         """Signal end of stream."""
         self._closed = True
-        for q in self._subscribers:
-            try:
-                q.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
-        try:
-            self._queue.put_nowait(None)
-        except asyncio.QueueFull:
-            pass
+        for q in tuple(self._subscribers):
+            q.close()
+        self._queue.close()
 
     async def __aiter__(self) -> AsyncIterator[EngineEvent]:
         while True:
@@ -124,9 +180,17 @@ class EventStream:
 
     def subscribe(self) -> asyncio.Queue[Optional[EngineEvent]]:
         """Create a new subscriber queue for fan-out consumption."""
-        q: asyncio.Queue[Optional[EngineEvent]] = asyncio.Queue(maxsize=1024)
-        self._subscribers.append(q)
+        q = _ClosingQueue(maxsize=1024)
+        if self._closed:
+            q.close()
+        else:
+            self._subscribers.append(q)
         return q
+
+    def unsubscribe(self, queue: asyncio.Queue[Optional[EngineEvent]]) -> None:
+        if isinstance(queue, _ClosingQueue) and queue in self._subscribers:
+            self._subscribers.remove(queue)
+            queue.close()
 
 
 __all__ = ["EngineEvent", "EngineEventType", "EventStream"]

@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 import time
 from typing import Any, Dict, List
@@ -21,7 +22,145 @@ import pytest
 
 from qitos.core.action import Action, ActionExecutionPolicy, ActionStatus
 from qitos.core.tool import BaseTool, ToolSpec
-from qitos.engine.action_executor import ActionExecutor
+from qitos.engine.action_executor import (
+    ActionExecutor, ToolWorkerCapacityError, ToolWorkerPool,
+)
+
+
+def test_parallel_segment_submits_only_available_slots(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor as RealPool
+    import qitos.engine.action_executor as executor_module
+
+    entered = threading.Event()
+    release = threading.Event()
+    submitted = 0
+    started = 0
+    lock = threading.Lock()
+
+    class CountingPool(RealPool):
+        def submit(self, *args, **kwargs):
+            nonlocal submitted
+            with lock:
+                submitted += 1
+            return super().submit(*args, **kwargs)
+
+    class BlockingTool(BaseTool):
+        def __init__(self):
+            super().__init__(ToolSpec(
+                name="blocked", description="blocked", concurrency_safe=True,
+            ))
+
+        def execute(self, args, runtime_context=None):
+            nonlocal started
+            with lock:
+                started += 1
+                if started == 2:
+                    entered.set()
+            assert release.wait(timeout=5)
+            return "ok"
+
+    monkeypatch.setattr(executor_module, "ThreadPoolExecutor", CountingPool)
+    executor = _executor({"blocked": BlockingTool()}, mode="parallel", max_concurrency=2)
+    worker = threading.Thread(target=lambda: executor.execute(
+        [Action(name="blocked") for _ in range(20)]
+    ))
+    worker.start()
+    try:
+        assert entered.wait(timeout=3)
+        with lock:
+            assert submitted == 2
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+
+
+def test_timed_out_worker_retains_capacity_until_actual_completion():
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingTool(BaseTool):
+        def __init__(self):
+            super().__init__(ToolSpec(name="blocking", description="blocking"))
+
+        def execute(self, args, runtime_context=None):
+            entered.set()
+            assert release.wait(timeout=3)
+            return "done"
+
+    pool = ToolWorkerPool(max_active=1)
+    executor = ActionExecutor(
+        tool_registry=FakeRegistry({"blocking": BlockingTool()}),
+        worker_pool_provider=lambda: pool,
+    )
+    try:
+        first = executor.execute([Action(name="blocking", timeout_s=0.02)])[0]
+        assert entered.is_set()
+        assert first.status is ActionStatus.TIMED_OUT
+        assert first.metadata["worker_still_running"] is True
+
+        second = executor.execute([Action(name="blocking", timeout_s=0.02)])[0]
+        assert second.status is ActionStatus.ERROR
+        assert second.metadata["error_code"] == "tool_worker_capacity"
+        assert second.metadata["executed"] is False
+
+        release.set()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            third = executor.execute([Action(name="blocking", timeout_s=0.2)])[0]
+            if third.status is ActionStatus.SUCCESS:
+                break
+            time.sleep(0.005)
+        assert third.status is ActionStatus.SUCCESS
+    finally:
+        release.set()
+        pool.close()
+
+
+def test_tool_worker_pool_propagates_context_and_reports_live_close():
+    identity = contextvars.ContextVar("tool_identity", default="missing")
+    entered = threading.Event()
+    release = threading.Event()
+    pool = ToolWorkerPool(max_active=1)
+    token = identity.set("run-identity")
+    try:
+        def work():
+            entered.set()
+            assert release.wait(timeout=3)
+            return identity.get()
+
+        future = pool.submit(work)
+        assert entered.wait(timeout=3)
+        assert pool.close()["workers_still_running"] == 1
+        release.set()
+        assert future.result(timeout=3) == "run-identity"
+        with pytest.raises(ToolWorkerCapacityError, match="closed"):
+            pool.submit(lambda: None)
+    finally:
+        identity.reset(token)
+        release.set()
+
+
+def test_parallel_tool_slots_propagate_calling_context():
+    identity = contextvars.ContextVar("parallel_identity", default="missing")
+
+    class IdentityTool(BaseTool):
+        def __init__(self):
+            super().__init__(ToolSpec(
+                name="identity", description="identity", concurrency_safe=True,
+            ))
+
+        def execute(self, args, runtime_context=None):
+            return identity.get()
+
+    token = identity.set("run-identity")
+    try:
+        results = _executor(
+            {"identity": IdentityTool()}, mode="parallel", max_concurrency=2,
+        ).execute([Action(name="identity"), Action(name="identity")])
+        assert [result.output for result in results] == ["run-identity"] * 2
+    finally:
+        identity.reset(token)
 
 
 class _Recorder:

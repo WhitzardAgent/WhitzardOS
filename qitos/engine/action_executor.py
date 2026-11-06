@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import threading
 import time
 from concurrent.futures import (
     FIRST_COMPLETED,
+    Future,
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
     wait,
 )
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING, cast
 
 from ..core.action import Action, ActionExecutionPolicy, ActionResult, ActionStatus
 from ..core.env import Env
@@ -91,6 +93,58 @@ class ToolBatchRecoveryError(RuntimeError):
         super().__init__(f"{code}: batch={batch_id} slot={slot_id}")
 
 
+class ToolWorkerCapacityError(RuntimeError):
+    """The bounded worker resource refused work before a tool started."""
+
+
+class ToolWorkerPool:
+    """Reusable, zero-waiting-queue pool for blocking tool attempts."""
+
+    def __init__(self, max_active: int = 4) -> None:
+        if max_active < 1:
+            raise ValueError("max_active must be positive")
+        self.max_active = max_active
+        self._slots = threading.BoundedSemaphore(max_active)
+        self._lock = threading.Lock()
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._closed = False
+        self._active = 0
+
+    def submit(self, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Future[Any]:
+        if not self._slots.acquire(blocking=False):
+            raise ToolWorkerCapacityError("tool worker capacity exhausted")
+        context = contextvars.copy_context()
+        try:
+            with self._lock:
+                if self._closed:
+                    raise ToolWorkerCapacityError("tool worker pool is closed")
+                if self._executor is None:
+                    self._executor = ThreadPoolExecutor(max_workers=self.max_active)
+                future = self._executor.submit(context.run, callback, *args, **kwargs)
+                self._active += 1
+        except BaseException:
+            self._slots.release()
+            raise
+
+        def finished(_: Future[Any]) -> None:
+            with self._lock:
+                self._active -= 1
+            self._slots.release()
+
+        future.add_done_callback(finished)
+        return future
+
+    def close(self) -> Dict[str, Any]:
+        with self._lock:
+            self._closed = True
+            if self._executor is not None:
+                self._executor.shutdown(wait=False)
+            return {
+                "admission_closed": True,
+                "workers_still_running": self._active,
+            }
+
+
 class ActionExecutor:
     """Executes normalized actions against a tool registry."""
 
@@ -110,6 +164,7 @@ class ActionExecutor:
         cancel_token: Optional[CancelToken] = None,
         effect_policy: Optional[ToolEffectPolicy] = None,
         quiescence_barrier: Any = None,
+        worker_pool_provider: Optional[Callable[[], ToolWorkerPool]] = None,
     ):
         self.tool_registry = tool_registry
         self.policy = policy or ActionExecutionPolicy()
@@ -131,8 +186,27 @@ class ActionExecutor:
         self._quiescence_barrier = quiescence_barrier
         self._pause_requested = threading.Event()
         self._stats_lock = threading.Lock()
+        self._worker_pool_provider = worker_pool_provider
+        self._owned_worker_pool: Optional[ToolWorkerPool] = None
+        self._worker_pool_lock = threading.Lock()
         # Populated by execute(); consumed by the trace layer.
         self.last_execution_stats: Dict[str, Any] = {}
+
+    def _worker_pool(self) -> ToolWorkerPool:
+        if self._worker_pool_provider is not None:
+            return self._worker_pool_provider()
+        with self._worker_pool_lock:
+            if self._owned_worker_pool is None:
+                self._owned_worker_pool = ToolWorkerPool(
+                    max_active=max(1, int(getattr(self.policy, "max_concurrency", 4)))
+                )
+            return self._owned_worker_pool
+
+    def close(self) -> None:
+        """Close only a pool owned by this standalone executor."""
+        with self._worker_pool_lock:
+            if self._owned_worker_pool is not None:
+                self._owned_worker_pool.close()
 
     # ── Cancellation ───────────────────────────────────────────────────────────
 
@@ -297,10 +371,21 @@ class ActionExecutor:
                         partial_batch_callback=partial_batch_callback,
                     )
 
-                for index in segment:
-                    future = pool.submit(_parallel_slot, index)
-                    futures[future] = index
-                pending = set(futures)
+                remaining = iter(segment)
+                pending: set[Any] = set()
+
+                def submit_available() -> None:
+                    while len(pending) < max_workers:
+                        try:
+                            index = next(remaining)
+                        except StopIteration:
+                            return
+                        context = contextvars.copy_context()
+                        future = pool.submit(context.run, _parallel_slot, index)
+                        futures[future] = index
+                        pending.add(future)
+
+                submit_available()
                 while pending:
                     done, pending = wait(pending, return_when=FIRST_COMPLETED)
                     for future in done:
@@ -355,6 +440,24 @@ class ActionExecutor:
                             else:
                                 still_running.add(future)
                         pending = still_running
+                    if aborted is None:
+                        submit_available()
+                if aborted is not None and aborted != "pause_requested":
+                    for index in remaining:
+                        receipt = self._execute_canonical_slot(
+                            actions[index],
+                            index=index,
+                            ledger=ledger,
+                            env=env,
+                            state=state,
+                            tracker=tracker,
+                            segment_index=segment_index,
+                            terminal_callback=terminal_callback,
+                            partial_batch_callback=partial_batch_callback,
+                            prevented_status=ActionStatus.CANCELLED,
+                            prevented_reason=aborted,
+                        )
+                        receipts[receipt.slot.slot_id] = receipt
             finally:
                 pool.shutdown(wait=True)
 
@@ -864,8 +967,12 @@ class ActionExecutor:
             # The synchronous executor cannot nest an event loop.  The
             # canonical runtime owns one helper thread for the coroutine; MCP
             # and other async tools do not grow a separate executor path.
-            pool = ThreadPoolExecutor(max_workers=1)
-            future = pool.submit(asyncio.run, value)
+            try:
+                future = self._worker_pool().submit(asyncio.run, value)
+            except ToolWorkerCapacityError:
+                if inspect.iscoroutine(value):
+                    value.close()
+                raise
             try:
                 return future.result(timeout=timeout_s)
             except FuturesTimeoutError as exc:
@@ -874,8 +981,6 @@ class ActionExecutor:
                     worker_still_running=True,
                     outcome_unknown=True,
                 ) from exc
-            finally:
-                pool.shutdown(wait=False)
 
         async def _driver() -> Any:
             if timeout_s is not None:
@@ -912,29 +1017,21 @@ class ActionExecutor:
                 output = self._resolve_awaitable(output, None)
             return output
 
-        # NOTE: deliberately not a `with` block — the context manager joins the
-        # worker on exit, which would block for the tool's full duration and
-        # defeat the timeout. We shut down without waiting and let the orphaned
-        # worker finish on its own (reported via `worker_still_running`).
-        pool = ThreadPoolExecutor(max_workers=1)
+        future = self._worker_pool().submit(
+            self._call_tool, tool, name, args, runtime_context=runtime_context
+        )
         try:
-            future = pool.submit(
-                self._call_tool, tool, name, args, runtime_context=runtime_context
-            )
-            try:
-                output = future.result(timeout=timeout_s)
-            except FuturesTimeoutError as exc:
-                if late_worker_callback is not None:
-                    future.add_done_callback(lambda _future: late_worker_callback())
-                raise ToolWorkerTimeout(
-                    f"action exceeded timeout of {timeout_s}s",
-                    worker_still_running=True,
-                ) from exc
-            if inspect.isawaitable(output):
-                output = self._resolve_awaitable(output, timeout_s)
-            return output
-        finally:
-            pool.shutdown(wait=False)
+            output = future.result(timeout=timeout_s)
+        except FuturesTimeoutError as exc:
+            if late_worker_callback is not None:
+                future.add_done_callback(lambda _future: late_worker_callback())
+            raise ToolWorkerTimeout(
+                f"action exceeded timeout of {timeout_s}s",
+                worker_still_running=True,
+            ) from exc
+        if inspect.isawaitable(output):
+            output = self._resolve_awaitable(output, timeout_s)
+        return output
 
     def _execute_one(
         self,
@@ -1396,6 +1493,23 @@ class ActionExecutor:
                 if self._interceptor_chain is not None:
                     result = self._interceptor_chain.after_execute(action, result, interceptor_context)
                 return result
+            except ToolWorkerCapacityError as exc:
+                return self._finish_result(
+                    action=action,
+                    status=ActionStatus.ERROR,
+                    start=start,
+                    attempts=attempts,
+                    tool_meta=tool_meta,
+                    error=str(exc),
+                    extra_metadata={
+                        **ordering_meta,
+                        "error_category": "execution_capacity",
+                        "error_code": "tool_worker_capacity",
+                        "executed": False,
+                        "worker_still_running": False,
+                        "ended_at": time.time(),
+                    },
+                )
             except ToolWorkerTimeout as exc:
                 # A timeout is a distinct terminal state, never retried: the
                 # worker thread may still be running and we must not claim

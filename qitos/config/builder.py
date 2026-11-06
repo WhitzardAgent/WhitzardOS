@@ -270,6 +270,17 @@ def _cleanup_composed_resources(
 
     if runtime is not None:
         invoke("work_runtime", getattr(runtime, "work_runtime", None))
+        close_workers = getattr(runtime, "close_tool_worker_pool", None)
+        if callable(close_workers):
+            try:
+                worker_receipt = close_workers()
+                if worker_receipt is not None:
+                    receipt["closed"].append("tool_worker_pool")
+                    receipt["tool_worker_pool"] = worker_receipt
+                    if worker_receipt.get("workers_still_running", 0):
+                        receipt["status"] = "workers_still_running"
+            except Exception as exc:
+                failures.append({"resource": "tool_worker_pool", "error_type": type(exc).__name__})
         for component in getattr(runtime, "snapshot_components", ()):
             if callable(getattr(component, "close", None)):
                 invoke(f"snapshot_owner:{component.codec.slot}", component)

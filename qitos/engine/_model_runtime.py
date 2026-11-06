@@ -669,9 +669,10 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         finally:
             if stream_handler is not None and stream_started:
                 stream_handler.on_end()
-        if log.items and isinstance(log.items[-1], UserItem):
+        user_exchange_id = log.last_user_exchange_id()
+        if user_exchange_id is not None:
             transaction = replace(transaction, assistant_item=replace(
-                transaction.assistant_item, exchange_id=log.items[-1].exchange_id,
+                transaction.assistant_item, exchange_id=user_exchange_id,
             ))
         log.append(transaction.assistant_item)
         existing_refs = tuple(
@@ -805,14 +806,14 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             # History projections and clean-process restore. Only the current
             # user input is new; never rewrite recorded provider/tool items.
             restored = ExchangeLog.from_dict(previous.to_persistence_dict())
-            latest = log.items[-1] if log.items else None
+            latest = log.last_item()
             if isinstance(latest, UserItem):
                 identity = hashlib.sha256(json.dumps({
                     "run": self.engine._active_run_id, "step": step_id,
                     "content": [block.to_dict() for block in latest.content],
                 }, sort_keys=True).encode()).hexdigest()[:24]
                 latest = replace(latest, item_id=f"request_user_{identity}")
-                if not any(item.item_id == latest.item_id for item in restored.items):
+                if not restored.contains_item_id(latest.item_id):
                     restored.append(latest)
             log = restored
             self.engine._qitos_restored_conversation_pending = False

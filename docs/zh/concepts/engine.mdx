@@ -188,6 +188,20 @@ result = engine.run(task)
 
 `AsyncEngine` 提供非阻塞的智能体执行能力。它封装了同样的 `Engine` 循环，但把阻塞调用放到线程池中执行，因此在 `asyncio` 事件循环中使用是安全的。
 
+每个 Engine 实例同一时刻只接受一个 run。并发运行使用不同实例。重叠调用会在修改已有 run 状态或事件 hook 前抛出 `RuntimeError`。取消异步等待会请求停止，worker 实际退出前该实例仍保持占用。`EventStream` 使用有界缓冲区，关闭时即使队列已满，也会先排空已接收事件再结束。扇出消费者提前离开时调用 `unsubscribe(queue)`。
+
+没有 deadline 的串行工具直接执行。带超时的同步工具使用 `RuntimeComposition` 按需创建的可复用线程池；活跃尝试数受 `ActionExecutionPolicy.max_concurrency` 限制。Python 工具超时后，在底层调用实际结束前仍占用槽位。容量耗尽时，后续尝试收到 `tool_worker_capacity`，并记录 `executed: false`。宿主可将同一个 `ToolWorkerPool(max_active=N)` 注入多个 Engine 各自的 `RuntimeComposition`；注入资源由宿主关闭。`AgentComposition.close()` 会关闭运行时自行创建的线程池，并报告仍在运行的 worker。这是协作式超时观测，不是强制终止线程。
+
+```python
+from qitos.engine import RuntimeComposition
+from qitos.engine.action_executor import ToolWorkerPool
+
+shared_tool_workers = ToolWorkerPool(max_active=8)
+runtime = RuntimeComposition(tool_worker_pool=shared_tool_workers)
+# 每个 Engine 使用自己的 RuntimeComposition，并注入同一个线程池。
+# 所有 run 结束后由宿主调用 shared_tool_workers.close()。
+```
+
 示意片段（非独立程序；完整执行文件见本页链接）。
 
 ```python

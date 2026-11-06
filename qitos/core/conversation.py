@@ -494,12 +494,33 @@ class ExchangeLog:
         self._queued_steering = [
             _isolated_copy(item) for item in (queued_steering or [])
         ]
+        self._revision = 0
+        self._validated_revision = -1
+        self._validated_schema: Optional[str] = None
+        self._validated_log_id: Optional[str] = None
+        self._known_item_ids: set[str] = set()
+        self._open_batch: Optional[str] = None
         self.validate()
 
     @property
     def items(self) -> tuple[ExchangeItem, ...]:
         """An isolated snapshot of committed persistent items."""
         return tuple(_isolated_copy(item) for item in self._items)
+
+    def last_user_exchange_id(self) -> Optional[str]:
+        """Read the last user identity without copying persistent message bodies."""
+        if self._items and isinstance(self._items[-1], UserItem):
+            return self._items[-1].exchange_id
+        return None
+
+    def last_item(self) -> Optional[ExchangeItem]:
+        """Read one isolated fact without copying the full history."""
+        return _isolated_copy(self._items[-1]) if self._items else None
+
+    def contains_item_id(self, item_id: str) -> bool:
+        """Check a committed or queued identity without copying the log."""
+        self.validate()
+        return item_id in self._known_item_ids
 
     @property
     def queued_steering(self) -> tuple[SteeringItem, ...]:
@@ -515,6 +536,7 @@ class ExchangeLog:
                 self._ensure_new_item_id(owned_item.item_id)
                 owned_item.validate()
                 self._queued_steering.append(owned_item)
+                self._revision += 1
                 self.validate()
                 return None
             raise IncompleteToolBatchError(
@@ -531,11 +553,23 @@ class ExchangeLog:
                 batch_id=owned_item.batch_id,
                 call_id=owned_item.identity.call_id,
             )
+        if isinstance(owned_item, (UserItem, SteeringItem)) or (
+            isinstance(owned_item, AssistantItem) and not owned_item.tool_calls()
+        ):
+            # The prefix was validated and no tool batch is open. This item
+            # cannot alter any earlier declaration/result invariant.
+            self._items.append(owned_item)
+            self._known_item_ids.add(owned_item.item_id)
+            self._revision += 1
+            self._validated_revision = self._revision
+            return None
         self._items.append(owned_item)
+        self._revision += 1
         try:
             self.validate()
         except Exception:
             self._items.pop()
+            self._revision += 1
             raise
         if isinstance(owned_item, AssistantItem) and owned_item.tool_calls():
             return ToolBatchBuilder(self, str(owned_item.batch_id))
@@ -549,9 +583,18 @@ class ExchangeLog:
         self._ensure_new_item_id(owned_item.item_id)
         owned_item.validate()
         self._queued_steering.append(owned_item)
+        self._revision += 1
         self.validate()
 
     def validate(self) -> None:
+        if (
+            self._validated_revision == self._revision
+            and self._validated_schema == self.schema_version
+            and self._validated_log_id == self.log_id
+            and len(self._known_item_ids)
+            == len(self._items) + len(self._queued_steering)
+        ):
+            return
         if self.schema_version != EXCHANGE_LOG_SCHEMA_VERSION:
             raise UnsupportedSchemaVersionError(
                 f"unsupported exchange schema: {self.schema_version!r}"
@@ -564,6 +607,7 @@ class ExchangeLog:
         declaration_exchange_ids: Dict[str, str] = {}
         results: Dict[str, List[ToolResultItem]] = {}
         result_keys: set[tuple[str, str]] = set()
+        last_result_positions: Dict[str, int] = {}
 
         for position, item in enumerate(self._items):
             item.validate()
@@ -643,6 +687,7 @@ class ExchangeLog:
                     )
                 result_keys.add(key)
                 results.setdefault(item.batch_id, []).append(item)
+                last_result_positions[item.batch_id] = position
 
         for queued in self._queued_steering:
             queued.validate()
@@ -658,11 +703,7 @@ class ExchangeLog:
             if len(batch_results) < len(calls):
                 open_batches.append(batch_id)
                 continue
-            last_result_position = max(
-                index
-                for index, item in enumerate(self._items)
-                if isinstance(item, ToolResultItem) and item.batch_id == batch_id
-            )
+            last_result_position = last_result_positions[batch_id]
             if last_result_position <= declaration_positions[batch_id]:
                 raise ToolBatchMismatchError(
                     "tool results must follow their assistant declaration",
@@ -673,7 +714,7 @@ class ExchangeLog:
                 "an ExchangeLog cannot contain multiple open tool batches",
                 batch_id=open_batches[0],
             )
-        if self.queued_steering and not open_batches:
+        if self._queued_steering and not open_batches:
             raise InvalidExchangeItemError(
                 "queued steering is only valid while a tool batch is open"
             )
@@ -690,11 +731,15 @@ class ExchangeLog:
                         item_id=item.item_id,
                         batch_id=open_batch,
                     )
+        self._known_item_ids = item_ids
+        self._open_batch = open_batches[0] if open_batches else None
+        self._validated_revision = self._revision
+        self._validated_schema = self.schema_version
+        self._validated_log_id = self.log_id
 
     def _ensure_new_item_id(self, item_id: str) -> None:
-        known = {item.item_id for item in self._items}
-        known.update(item.item_id for item in self._queued_steering)
-        if item_id in known:
+        self.validate()
+        if item_id in self._known_item_ids:
             raise DuplicateItemIdError(
                 f"duplicate item ID: {item_id}", item_id=item_id
             )
@@ -730,17 +775,8 @@ class ExchangeLog:
         ]
 
     def open_batch_id(self) -> Optional[str]:
-        declarations: List[tuple[str, int]] = []
-        counts: Dict[str, int] = {}
-        for item in self._items:
-            if isinstance(item, AssistantItem) and item.tool_calls():
-                declarations.append((str(item.batch_id), len(item.tool_calls())))
-            elif isinstance(item, ToolResultItem):
-                counts[item.batch_id] = counts.get(item.batch_id, 0) + 1
-        for batch_id, expected in declarations:
-            if counts.get(batch_id, 0) < expected:
-                return batch_id
-        return None
+        self.validate()
+        return self._open_batch
 
     def assert_ready_for_model_transaction(self) -> None:
         self.validate()
@@ -963,6 +999,7 @@ class ToolBatchBuilder:
         original_items = list(self.exchange_log._items)
         original_steering = list(self.exchange_log._queued_steering)
         self.exchange_log._items.append(owned_result)
+        self.exchange_log._revision += 1
         self._results[key] = owned_result
         closed = not self.missing_calls
         if closed:
@@ -973,6 +1010,7 @@ class ToolBatchBuilder:
         except Exception:
             self.exchange_log._items = original_items
             self.exchange_log._queued_steering = original_steering
+            self.exchange_log._revision += 1
             self._results.pop(key, None)
             raise
         return closed

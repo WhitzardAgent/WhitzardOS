@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncGenerator, AsyncIterator, Generic, List, Optional, TypeVar
+import threading
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, List, Optional, TypeVar
 
 from ..core.agent_module import AgentModule
 from ..core.state import StateSchema
@@ -39,6 +40,11 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
         self.event_stream: Optional[EventStream] = None
         self._workers: set[asyncio.Task[Any]] = set()
         self._active_hook: Optional[_StreamBridgeHook] = None
+        self._run_admission = threading.Lock()
+
+    def _admit_run(self) -> None:
+        if not self._run_admission.acquire(blocking=False):
+            raise RuntimeError("this AsyncEngine already has an active run")
 
     def _track_worker(self, task: asyncio.Task[Any]) -> None:
         # A cancelled consumer cannot stop Python code already in the thread.
@@ -67,9 +73,15 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
         executing inside the worker thread cannot be forcibly killed by
         Python; it is asked to stop and drains on its own.
         """
-        run_task = asyncio.ensure_future(
-            asyncio.to_thread(self._engine.run, task, **kwargs)
-        )
+        self._admit_run()
+        try:
+            run_task = asyncio.ensure_future(
+                asyncio.to_thread(self._engine.run, task, **kwargs)
+            )
+        except BaseException:
+            self._run_admission.release()
+            raise
+        run_task.add_done_callback(lambda _: self._run_admission.release())
         self._track_worker(run_task)
         try:
             return await asyncio.shield(run_task)
@@ -90,6 +102,7 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
         task: str,
         *,
         transformers: Optional[List[StreamTransformer]] = None,
+        _stream_callback: Optional[Callable[[str], None]] = None,
         **kwargs: Any,
     ) -> AsyncGenerator[EngineEvent | TransformerOutput, None]:
         """Run the agent loop and yield structured events as they occur.
@@ -106,24 +119,36 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
             and TransformerOutput values are yielded instead of raw events.
             Events that produce no TransformerOutput are suppressed.
         """
-        stream = EventStream()
-        self.event_stream = stream
-        chain = TransformerChain(transformers) if transformers else None
+        self._admit_run()
+        previous_callback = self._engine.stream_callback
+        hook: Optional[_StreamBridgeHook] = None
+        try:
+            if _stream_callback is not None:
+                self._engine.stream_callback = _stream_callback
+            stream = EventStream()
+            self.event_stream = stream
+            chain = TransformerChain(transformers) if transformers else None
+            hook = _StreamBridgeHook(stream)
+            self._active_hook = hook
+            self._engine.hooks.append(hook)
 
-        hook = _StreamBridgeHook(stream)
-        self._active_hook = hook
-        self._engine.hooks.append(hook)
+            def _run() -> EngineResult[StateT]:
+                try:
+                    return self._engine.run(task, **kwargs)
+                finally:
+                    stream.close()
 
-        if chain:
-            chain.on_run_start()
-
-        def _run() -> EngineResult[StateT]:
-            try:
-                return self._engine.run(task, **kwargs)
-            finally:
-                stream.close()
-
-        run_task = asyncio.ensure_future(asyncio.to_thread(_run))
+            if chain:
+                chain.on_run_start()
+            run_task = asyncio.ensure_future(asyncio.to_thread(_run))
+        except BaseException:
+            if hook is not None:
+                self._engine.hooks = [h for h in self._engine.hooks if h is not hook]
+            self._active_hook = None
+            self.event_stream = None
+            self._engine.stream_callback = previous_callback
+            self._run_admission.release()
+            raise
         self._track_worker(run_task)
 
         try:
@@ -145,13 +170,21 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
                 ]
                 self._active_hook = None
                 self.event_stream = None
+                self._engine.stream_callback = previous_callback
                 if not run_task.done():
                     self.cancel("immediate")
                     stream.close()
+                    run_task.add_done_callback(lambda _: self._run_admission.release())
+                else:
+                    self._run_admission.release()
 
     def run(self, task: str, **kwargs: Any) -> EngineResult[StateT]:
         """Synchronous run (delegates to underlying Engine)."""
-        return self._engine.run(task, **kwargs)
+        self._admit_run()
+        try:
+            return self._engine.run(task, **kwargs)
+        finally:
+            self._run_admission.release()
 
     async def arun_stream_tokens(
         self, task: str, **kwargs: Any
@@ -165,7 +198,6 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
         """
         capabilities = getattr(getattr(self.agent, "llm", None), "qitos_provider_capabilities", None)
         native_stream = not callable(capabilities) or capabilities().get("supports_streaming", False)
-        previous_callback = self._engine.stream_callback
 
         def on_delta(text: str) -> None:
             stream = self.event_stream
@@ -176,16 +208,17 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
                     phase=RuntimePhase.DECIDE, payload={"text": text},
                 ))
 
-        if native_stream:
-            self._engine.stream_callback = on_delta
-        iterator = self.arun_stream(task, **kwargs)
+        iterator = self.arun_stream(
+            task,
+            _stream_callback=on_delta if native_stream else None,
+            **kwargs,
+        )
         try:
             async for item in iterator:
                 if isinstance(item, EngineEvent):
                     yield item
         finally:
             await iterator.aclose()
-            self._engine.stream_callback = previous_callback
 
 
 class _StreamBridgeHook:

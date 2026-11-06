@@ -89,6 +89,38 @@ def _call(
     )
 
 
+def test_simple_append_validates_each_new_item_once(monkeypatch: Any) -> None:
+    checked = 0
+    original_validate = UserItem.validate
+
+    def counted_validate(self: UserItem) -> None:
+        nonlocal checked
+        checked += 1
+        original_validate(self)
+
+    monkeypatch.setattr(UserItem, "validate", counted_validate)
+    log = ExchangeLog(log_id="linear_append")
+    for index in range(1000):
+        log.append(UserItem(
+            item_id=f"user_{index}",
+            exchange_id=f"exchange_{index}",
+            content=[ContentBlock(type="text", text="x")],
+        ))
+    assert checked == 1000
+    assert log.last_user_exchange_id() == "exchange_999"
+    assert log.contains_item_id("user_999")
+    assert not log.contains_item_id("missing")
+    with pytest.raises(DuplicateItemIdError):
+        log.append(UserItem(
+            item_id="user_999",
+            exchange_id="duplicate",
+            content=[ContentBlock(type="text", text="x")],
+        ))
+    log.schema_version = "unknown"
+    with pytest.raises(UnsupportedSchemaVersionError):
+        log.validate()
+
+
 def _assistant_with_calls(
     *calls: ToolCall,
     item_id: str = "assistant_1",

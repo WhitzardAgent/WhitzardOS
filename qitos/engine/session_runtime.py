@@ -2633,18 +2633,20 @@ class Session:
             )
             # The persisted conversation owns steering. Publish only newly
             # committed dispositions, including queued -> applied transitions.
+            conversation = next((item for item in snapshot.components if item.slot == "conversation"), None)
+            current_steering = (conversation.payload.get("steering_receipts", ())
+                                if conversation is not None else ())
             prior_steering: dict[str, Any] = {}
-            if expected_head is not None:
+            if current_steering and expected_head is not None:
                 old_snapshot = self._load_snapshot(expected_head)
                 old_conversation = next((item for item in old_snapshot.components
                                          if item.slot == "conversation"), None)
                 if old_conversation is not None:
                     prior_steering = {item["receipt_id"]: item for item in
                                       old_conversation.payload.get("steering_receipts", ())}
-            conversation = next((item for item in snapshot.components if item.slot == "conversation"), None)
             if conversation is not None:
                 from .states import RuntimePhase
-                for steering in conversation.payload.get("steering_receipts", ()):
+                for steering in current_steering:
                     if prior_steering.get(steering["receipt_id"]) != steering:
                         self._engine._emit(step_id, RuntimePhase.DECIDE, payload={
                             "stage": "steering_receipt", "steering_receipt": dict(steering),
