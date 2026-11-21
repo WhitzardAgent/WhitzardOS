@@ -23,7 +23,7 @@ TASK = (
 )
 WORKSPACE = Path("./playground/delegate_pattern")
 MODEL_NAME = os.getenv("QITOS_MODEL", "glm-5.1-w4a8")
-MODEL_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://ekkmopeh8ecgccbjjb9johhhd5dcabcc.openapi-sj.sii.edu.cn/v1/")
+MODEL_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.example.com/v1/")
 MAX_STEPS = 10
 
 
